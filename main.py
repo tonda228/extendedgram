@@ -3,7 +3,7 @@ from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError, P
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
 from telethon.tl.custom.dialog import Dialog
-from telethon.tl.types import User
+from telethon.tl.types import User, Channel
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import filters, ApplicationBuilder, CommandHandler, MessageHandler, PollAnswerHandler, ContextTypes, CallbackQueryHandler
@@ -65,9 +65,9 @@ cur = connection.cursor()
 EMBEDDING_MODEL = "ai/qwen3-embedding:0.6b"
 EMBEDDING_URL = "http://localhost:12434/engines/v1/embeddings"
 
-# add settings
 # add preloading
 # add event handlings
+# add classes for data encapsulation
 
 def initialize_db() -> None:
     cur.execute("""
@@ -77,21 +77,17 @@ def initialize_db() -> None:
         set_read_after_summary BOOLEAN NOT NULL,
         set_read_after_search BOOLEAN NOT NULL,
         allow_all BOOLEAN NOT NULL,
-        allowed_chats BIGINT[],
-        preloading BOOLEAN
+        preloading BOOLEAN NOT NULL,
+        hisotry_size BIGINT NOT NULL,
+        allowed_chats BIGINT[]
     )
     """)
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS media (
-        media_id BIGSERIAL PRIMARY KEY,
-        description TEXT NOT NULL
-    )
-    """)
-    cur.execute("""
     CREATE TABLE IF NOT EXISTS message (
-        message_id BIGINT NOT NULL,
-        chat_id BIGINT NOT NULL,
+        message_id BIGINT,
+        chat_id BIGINT,
+        topic TEXT,
         sender_id BIGINT NOT NULL,
         sender_name TEXT NOT NULL,
         date_time TIMESTAMPTZ NOT NULL,
@@ -103,41 +99,21 @@ def initialize_db() -> None:
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS app_user_message (
+        user_id BIGINT REFERENCES app_user(user_id) ON DELETE CASCADE,
+        message_id BIGINT,
+        chat_id BIGINT,
+        PRIMARY KEY (user_id, message_id, chat_id),
+        FOREIGN KEY (message_id, chat_id)
+            REFERENCES message(message_id, chat_id)
+            ON DELETE CASCADE
+    )
+    """)
+
+    cur.execute("""
     CREATE INDEX ON message USING hnsw (embedding vector_cosine_ops)
     """)
     connection.commit()
-
-def image_to_data_url(path: str | os.path) -> str:
-    mime_type, _ = mimetypes.guess_file_type(path)
-    with open(path, "rb") as file:
-        encoded = base64.b64encode(file.read()).decode("utf-8")
-    return f"data:{mime_type};base64,{encoded}"
-
-async def get_message_info(data, message):
-    # adding info about sender
-    name = "Username: " + message.sender_name
-    data.append({
-        "type": "text",
-        "text": name
-    })
-
-    message_id = str(message.message_id)
-    date =  message.date_time.strftime("%H:%M:%S %d.%m.%Y")
-    message_text = "Message " + message_id + " " + date + ": " + (message.text if message.text else "")
-    media_text = "Media: " + ("None" if message.media_description is None else message.media_description)
-    full_text = message_text + "\n" + media_text
-    # adding info about message
-    data.append({
-        "type": "text",
-        "text": full_text
-    })
-
-
-def validate_phone_number(number: str) -> bool:
-    number = "".join(number.split())
-    if len(number) != 13 or number[0] != '+' or not number[1:].isdigit():
-        return False
-    return True
 
 async def create_embedding(message: Message, media_description: str | None, update: bool = False) -> Vector:
     text = "Text: " + ("None" if message.text is None else message.text)
@@ -162,83 +138,46 @@ async def create_embedding(message: Message, media_description: str | None, upda
         connection.commit()
     return embedding
 
-# change or delete this
+def image_to_data_url(path: str | os.path) -> str:
+    mime_type, _ = mimetypes.guess_file_type(path)
+    with open(path, "rb") as file:
+        encoded = base64.b64encode(file.read()).decode("utf-8")
+    return f"data:{mime_type};base64,{encoded}"
 
-async def store_message_to_db(dialog: Dialog,
-                              message: Message,
-                              saved_messages,
-                              saved_id: int,
-                              sender_name: str,
-                              add_embeddings = False) -> int:
-    if saved_id < len(saved_messages) and saved_messages[saved_id].message_id == message.id:
-        if add_embeddings and saved_messages[saved_id].embedding is None:
-            await create_embedding(message, saved_messages[saved_id].media_description, True)
-        return saved_id + 1
-
-    media_description = None
-    if message.media:
-        if not os.path.exists("media"):
-            os.makedirs("media")
-
-        if message.photo:
-            media = await message.download_media("media")
-            request_data = {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Give very concise one sentence description of this image"
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_to_data_url(media)
-                        }
-                    }
-                ]
+async def translate_image(message: Message):
+    media = await message.download_media("media")
+    request_data = {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": "Give very concise one sentence description of this image"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_to_data_url(media)
+                }
             }
-            response = await completions_client.chat.completions.create(
-                model=COMPLETIONS_MODEL,
-                messages=[request_data])
-            media_description = response.choices[0].message.content
+        ]
+    }
+    response = await completions_client.chat.completions.create(
+        model=COMPLETIONS_MODEL,
+        messages=[request_data])
+    media_description = response.choices[0].message.content
+    os.remove(media)
+    return media_description
 
-            os.remove(media)
-
-    embedding = None if not add_embeddings else await create_embedding(message, media_description, False)
-
-    sender = await message.get_sender()
-    sender_name = "Sender name: "
-    if dialog.is_channel:
-        sender_name += sender.title
-    else:
-        if sender.username:
-            sender_name += sender.username
-        else:
-            sender_name += sender.first_name + (sender.last_name if sender.last_name else "")
-
-    cur.execute("""
-                INSERT INTO message (message_id,
-                                     chat_id,
-                                     sender_id,
-                                     sender_name,
-                                     date_time,
-                                     text,
-                                     media_description,
-                                     embedding)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (message.id, dialog.id, sender.id, sender_name, message.date, message.text, media_description,
-                      embedding))
-    connection.commit()
-    pass
-
-async def store_unsaved_messages(dialog,
+async def store_unsaved_messages(user_id: int,
+                                 dialog,
                                  last_id: int,
                                  saved_messages,
                                  client: TelegramClient,
                                  add_embeddings = False) -> None:
     saved_id = 0
     topic_id = dialog[1].id if dialog[1] else None
-    async for message in client.iter_messages(dialog[0], reply_to=topic_id):
+    limit = dialog[1].unread_count if dialog[1] else dialog[0].unread_count
+    async for message in client.iter_messages(dialog[0], reply_to=topic_id, limit=limit):
         if message.id <= last_id or message.date <= dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=100):
             break
 
@@ -254,28 +193,7 @@ async def store_unsaved_messages(dialog,
                 os.makedirs("media")
 
             if message.photo:
-                media = await message.download_media("media")
-                request_data = {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Give very concise one sentence description of this image"
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image_to_data_url(media)
-                            }
-                        }
-                    ]
-                }
-                response = await completions_client.chat.completions.create(
-                    model=COMPLETIONS_MODEL,
-                    messages=[request_data])
-                media_description = response.choices[0].message.content
-
-                os.remove(media)
+                media_description = await translate_image(message)
 
 
         embedding = None if not add_embeddings else await create_embedding(message, media_description, False)
@@ -286,13 +204,12 @@ async def store_unsaved_messages(dialog,
                 sender_name += sender.username
             else:
                 sender_name += sender.first_name + (sender.last_name if sender.last_name else "")
-        elif sender.is_channel:
+        elif isinstance(sender, Channel):
             sender_name += sender.title
 
         topic = None
         if dialog[1]:
             topic = dialog[1].title
-
 
         cur.execute("""
         INSERT INTO message (
@@ -307,8 +224,22 @@ async def store_unsaved_messages(dialog,
             embedding
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (message.id, dialog[0].id, topic, sender.id, sender_name, message.date, message.text, media_description, embedding))
+
+        cur.execute("""
+        INSERT INTO app_user_message (
+            user_id,
+            message_id,
+            chat_id
+        ) VALUES (%s, %s, %s)
+        """, (user_id, message.id, dialog[0].id))
         connection.commit()
 
+
+def validate_phone_number(number: str) -> bool:
+    number = "".join(number.split())
+    if len(number) != 13 or number[0] != '+' or not number[1:].isdigit():
+        return False
+    return True
 
 async def process_phone_number(update: Update, context, number):
     if not validate_phone_number(number):
@@ -325,24 +256,6 @@ async def process_phone_number(update: Update, context, number):
     code_text = "Please enter your code:"
     await context.bot.send_message(chat_id=update.effective_chat.id, text=code_text)
     user_info[user_id]["status"] = WAIT_FOR_CODE
-
-async def successful_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
-
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text="Successfully signed in.")
-    cur.execute("""
-                INSERT INTO app_user (user_id,
-                                      string_session,
-                                      set_read_after_summary,
-                                      set_read_after_search,
-                                      allow_all,
-                                      allowed_chats)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """, (user_id, client.session.save(), False, False, True, []))
-    connection.commit()
-    user_info[user_id]["status"] = AUTHENTICATED
 
 async def process_code(update: Update, context, code):
     code = "".join(code.split())
@@ -380,6 +293,24 @@ async def process_password(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     else:
         await successful_login(update, context)
 
+async def successful_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    client = user_info[user_id]["client"]
+
+    await context.bot.send_message(chat_id=update.effective_chat.id,
+                                   text="Successfully signed in.")
+    cur.execute("""
+                INSERT INTO app_user (user_id,
+                                      string_session,
+                                      set_read_after_summary,
+                                      set_read_after_search,
+                                      allow_all,
+                                      allowed_chats)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """, (user_id, client.session.save(), False, False, True, []))
+    connection.commit()
+    user_info[user_id]["status"] = AUTHENTICATED
+
 # async def process_qr_code(update: Update, context):
 #     user_id = update.effective_user.id
 #     client = user_info[user_id]["client"]
@@ -404,6 +335,9 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE, send_with = N
     await send_with.message.reply_text("Where do you wish to continue?", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await check_authentication(update, context):
+        return
+
     user_id = update.effective_user.id
     status = user_info[user_id]["status"]
     dialog = user_info[user_id]["last_read"]
@@ -417,13 +351,91 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if query.data == "Yes":
             await client.send_read_acknowledge(dialog[0], clear_mentions=True, clear_reactions=True)
         await menu(update, context, query)
-    if query.data == "summarize":
+        user_info[user_id]["status"] = AUTHENTICATED
+    elif query.data == "summarize":
         await summarize(update, context)
     elif query.data == "search":
         await search(update, context)
     elif query.data == "settings":
-        await query.message.reply_text("Settings are unavailable yet")
+        await settings(update, context)
+    elif query.data in ["allow_all", "set_read_after_summary", "preloading"]:
+        cur.execute("""
+        UPDATE app_user
+        SET %s = NOT %s
+        WHERE user_id = %s
+        """, (query.data, query.data, update.effective_user.id))
+        connection.commit()
+        await settings(update, context)
+    elif query.data == "allowed_chats":
+        cur.execute("""
+        SELECT allowed_chats
+        FROM app_user
+        WHERE user_id = %s
+        """, (update.effective_user.id,))
+        await settings(update, context)
+    elif query.data == "back":
+        pass
 
+
+async def get_message_info(data, message):
+    # adding info about sender
+    name = "Username: " + message.sender_name
+    data.append({
+        "type": "text",
+        "text": name
+    })
+
+    message_id = str(message.message_id)
+    date =  message.date_time.strftime("%H:%M:%S %d.%m.%Y")
+    message_text = "Message " + message_id + " " + date + ": " + (message.text if message.text else "")
+    media_text = "Media: " + ("None" if message.media_description is None else message.media_description)
+    full_text = message_text + "\n" + media_text
+    # adding info about message
+    data.append({
+        "type": "text",
+        "text": full_text
+    })
+
+async def summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_authentication(update, context):
+        return
+    user_id = update.effective_user.id
+    client = user_info[user_id]["client"]
+
+    unread_dialogs = []
+    index = 1
+    async for dialog in client.iter_dialogs():
+        if dialog.unread_count == 0:
+            continue
+        if dialog.is_group and getattr(dialog.entity, "forum", False):
+            result = await client(
+                functions.messages.GetForumTopicsRequest(
+                    peer=dialog,
+                    offset_date=None,
+                    offset_id=0,
+                    offset_topic=0,
+                    limit=100
+                )
+            )
+            for topic in result.topics:
+                if topic.unread_count == 0:
+                    continue
+                chat_name = f"{dialog.name}|{topic.title}"
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=
+                    f"{index}) In {chat_name}: {topic.unread_count} unread message{"" if topic.unread_count == 1 else "s"}")
+                unread_dialogs.append((dialog, topic))
+                index += 1
+            continue
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=
+            f"{index}) In {dialog.name}: {dialog.unread_count} unread message{"" if dialog.unread_count == 1 else "s"}")
+        unread_dialogs.append((dialog, None))
+        index += 1
+
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Choose which chat you want to summarize, "
+          f"that is a number from 0 to {len(unread_dialogs)}, where 0 means none.")
+
+    user_info[user_id]["status"] = WAIT_FOR_SUMMARIZE_CHAT
+    user_info[user_id]["unread_dialogs"] = unread_dialogs
 
 async def process_summarize_query(update: Update, context, text=""):
     if not update.effective_user:
@@ -461,7 +473,7 @@ async def process_summarize_query(update: Update, context, text=""):
         saved_messages = []
 
     if last_message_id != chosen_dialog[0].message.id:
-        await store_unsaved_messages(chosen_dialog, last_message_id, saved_messages, client, False)
+        await store_unsaved_messages(user_id, chosen_dialog, last_message_id, saved_messages, client, False)
 
     cur.execute("""
     select * from (select *
@@ -551,8 +563,6 @@ async def process_summarize_query(update: Update, context, text=""):
     user_info[user_id]["last_read"] = chosen_dialog
 
 
-
-
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await check_authentication(update, context):
         return
@@ -562,6 +572,9 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     dialogs = await client.get_dialogs()
     dialog_names = [dialog.name for dialog in dialogs]
+
+    # poll cant have more than 12 options
+
     message = await context.bot.send_poll(question="Choose in which chats you want to search.",
                                 options=dialog_names,
                                 allows_multiple_answers=True,
@@ -606,9 +619,6 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     best_messages = []
     for dialog in queried_dialogs:
-
-        # Leave only one db query
-
         cur.execute("""
         select *
         from message
@@ -658,9 +668,7 @@ async def check_authentication(update: Update, context: ContextTypes.DEFAULT_TYP
             user_info[user_id]["status"] = WAIT_FOR_PHONE_NUMBER
             phone_number_text = "To use this bot you need to be logged into your account.\nPlease enter your phone number below:"
             await context.bot.send_message(chat_id=update.effective_chat.id, text=phone_number_text)
-            return False
-        else:
-            return True
+        return status >= AUTHENTICATED
 
     cur.execute("select * from app_user where user_id = %s", (user_id,))
     result = cur.fetchone()
@@ -678,7 +686,6 @@ async def check_authentication(update: Update, context: ContextTypes.DEFAULT_TYP
 
         phone_number_text = "To use this bot you need to be logged into your account.\nPlease enter your phone number below:"
         await context.bot.send_message(chat_id=update.effective_chat.id, text=phone_number_text)
-        return False
     else:
         session_string = result[1]
         client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
@@ -690,7 +697,7 @@ async def check_authentication(update: Update, context: ContextTypes.DEFAULT_TYP
             "given_dialogs": [],
             "last_read": None
         }
-        return True
+    return result is not None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_text = "Welcome to Busy Lazy Bot!\n"\
@@ -723,49 +730,61 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif status == WAIT_FOR_SEARCH_TEXT:
         await process_search_text(update, context, text)
 
-
-async def summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_authentication(update, context):
         return
-    user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
 
-    unread_dialogs = []
-    index = 1
-    async for dialog in client.iter_dialogs():
-        if dialog.unread_count == 0:
-            continue
-        if dialog.is_group and getattr(dialog.entity, "forum", False):
-            result = await client(
-                functions.messages.GetForumTopicsRequest(
-                    peer=dialog,
-                    offset_date=None,
-                    offset_id=0,
-                    offset_topic=0,
-                    limit=100
-                )
-            )
-            for topic in result.topics:
-                if topic.unread_count == 0:
-                    continue
-                print(topic)
-                chat_name = f"{dialog.name}|{topic.title}"
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=
-                    f"{index}) In {chat_name}: {topic.unread_count} unread message{"" if topic.unread_count == 1 else "s"}")
-                unread_dialogs.append((dialog, topic))
-                index += 1
-            continue
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=
-            f"{index}) In {dialog.name}: {dialog.unread_count} unread message{"" if dialog.unread_count == 1 else "s"}")
-        unread_dialogs.append((dialog, None))
-        index += 1
+    cur.execute("""
+    SELECT *
+    FROM app_user
+    WHERE user_id = %s
+    """, (update.effective_user.id,))
+    user = cur.fetchone()
+    allow_all = "ON" if user.allow_all else "OFF"
+    set_read_after_summary = "ON" if user.set_read_after_summary else "OFF"
+    preloading = "ON" if user.preloading else "OFF"
+    history_size = user.history_size
+    keyboard = [
+        [
+            InlineKeyboardButton(text="Allowed chats", callback_data="allowed_chats"),
+            InlineKeyboardButton(text=f"Allow all: {allow_all}", callback_data="allow_all")
+        ],
+        [
+            InlineKeyboardButton(text=f"Read after summary: {set_read_after_summary}", callback_data="set_read_after_summary"),
+            InlineKeyboardButton(text=f"Preloading: {preloading}", callback_data="preloading")
+        ],
+        [
+            InlineKeyboardButton(text=f"History size: {history_size} days", callback_data="history_size")
+        ],
+        [
+            InlineKeyboardButton(text="Back", callback_data="back")
+        ]
+    ]
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Settings", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Choose which chat you want to summarize, "
-          f"that is a number from 0 to {len(unread_dialogs)}, where 0 means none.")
+async def log_out(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # add confirmation
 
-    user_info[user_id]["status"] = WAIT_FOR_SUMMARIZE_CHAT
-    user_info[user_id]["unread_dialogs"] = unread_dialogs
+    cur.execute("""
+    DELETE FROM app_user
+    WHERE user_id = %s
+    """, (update.effective_user.id,))
 
+    cur.execute("""
+    DELETE FROM message m
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM app_user_message aum
+        WHERE aum.message_id = m.message_id
+            AND aum.chat_id != m.chat_id
+    )
+    """)
+    connection.commit()
+
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="You've successfully logged out.")
+
+    if update.effective_user.id in user_info:
+        del user_info[update.effective_user.id]
 
 async def main():
     await application.initialize()
@@ -781,6 +800,8 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("summarize", summarize))
     application.add_handler(CommandHandler("search", search))
     application.add_handler(CommandHandler("menu", menu))
+    application.add_handler(CommandHandler("settings", settings))
+    application.add_handler(CommandHandler("log_out", log_out))
     application.add_handler(CallbackQueryHandler(process_button))
     application.add_handler(PollAnswerHandler(process_search_chat))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
