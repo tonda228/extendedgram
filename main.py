@@ -3,6 +3,7 @@ from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError, P
 from telethon.sessions import StringSession
 from telethon.tl.custom.message import Message
 from telethon.tl.custom.dialog import Dialog
+from telethon.client import telegramclient
 from telethon.tl.types import User, Channel
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,18 +20,41 @@ from pgvector import Vector
 import httpx
 from openai import AsyncOpenAI
 import datetime as dt
+from enum import IntEnum, auto
 
-LOGGED_OUT = -1
-WAIT_FOR_PHONE_NUMBER = 0
-WAIT_FOR_CODE = 1
-REQUIRES_PASSWORD = 2
-AUTHENTICATED = 3
-WAIT_FOR_SUMMARIZE_CHAT = 4
-WAIT_FOR_READ = 5
-WAIT_FOR_SEARCH_CHAT = 6
-WAIT_FOR_SEARCH_TEXT = 7
+class UserState(IntEnum):
+    LOGGED_OUT = auto()
+    WAIT_FOR_PHONE_NUMBER = auto()
+    WAIT_FOR_CODE = auto()
+    WAIT_FOR_PASSWORD = auto()
+    AUTHENTICATED = auto()
+    WAIT_FOR_SUMMARIZE_CHAT = auto()
+    WAIT_FOR_READ = auto()
+    WAIT_FOR_SEARCH_CHAT = auto()
+    WAIT_FOR_SEARCH_TEXT = auto()
+    WAIT_FOR_LOG_OUT_CONFIRMATION = auto()
 
-user_info = {}
+class AppUser:
+    def __init__(self, status: UserState, client: telegramclient.TelegramClient, app_user=None):
+        self.status = status
+        self.client = client
+        self.dialogs = None
+        self.last_read = None
+        self.phone_num = None
+        self.phone_code_hash = None
+        self.tries_left = 5
+
+        self.preloading = False if not app_user else app_user.preloading
+        self.history_size = 0 if not app_user else app_user.history_size
+        self.set_read_after_summary = False if not app_user else app_user.history_size
+        self.allow_all = True if not app_user else app_user.allow_all
+
+class AppUserPreloading:
+    def __init__(self):
+        self.idle_task = None
+        self.preloading = None
+
+user_info: dict[int, AppUser] = {}
 poll_messages = {}
 
 # Telethon
@@ -177,8 +201,14 @@ async def store_unsaved_messages(user_id: int,
     saved_id = 0
     topic_id = dialog[1].id if dialog[1] else None
     limit = dialog[1].unread_count if dialog[1] else dialog[0].unread_count
+    days = user_info[user_id].history_size
+    if days == 0:
+        days = 42
+    if not add_embeddings:
+        limit = None
+
     async for message in client.iter_messages(dialog[0], reply_to=topic_id, limit=limit):
-        if message.id <= last_id or message.date <= dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=100):
+        if message.id <= last_id or message.date <= dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=days):
             break
 
         if saved_id < len(saved_messages) and saved_messages[saved_id].message_id == message.id:
@@ -210,6 +240,7 @@ async def store_unsaved_messages(user_id: int,
         topic = None
         if dialog[1]:
             topic = dialog[1].title
+        sender_id = sender.id if sender else dialog[0].id
 
         cur.execute("""
         INSERT INTO message (
@@ -223,7 +254,7 @@ async def store_unsaved_messages(user_id: int,
             media_description,
             embedding
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (message.id, dialog[0].id, topic, sender.id, sender_name, message.date, message.text, media_description, embedding))
+        """, (message.id, dialog[0].id, topic, sender_id, sender_name, message.date, message.text, media_description, embedding))
 
         cur.execute("""
         INSERT INTO app_user_message (
@@ -246,36 +277,42 @@ async def process_phone_number(update: Update, context, number):
         raise ValueError
 
     user_id = update.effective_user.id
-    user_info[user_id]["phone_num"] = number
+    user_info[user_id].phone_num = number
 
-    client = user_info[user_id]["client"]
+    client = user_info[user_id].client
     await client.connect()
     result = await client.send_code_request(number)
-    user_info[user_id]["phone_code_hash"] = result.phone_code_hash
+    user_info[user_id].phone_code_hash = result.phone_code_hash
 
     code_text = "Please enter your code:"
     await context.bot.send_message(chat_id=update.effective_chat.id, text=code_text)
-    user_info[user_id]["status"] = WAIT_FOR_CODE
+    user_info[user_id].status = UserState.WAIT_FOR_CODE
 
-async def process_code(update: Update, context, code):
+async def process_code(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
     code = "".join(code.split())
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
-    number = user_info[user_id]["phone_num"]
-    phone_code_hash = user_info[user_id]["phone_code_hash"]
+    app_user = user_info[user_id]
+    client = user_info[user_id].client
+    number = user_info[user_id].phone_num
+    phone_code_hash = user_info[user_id].phone_code_hash
+
+    if app_user.tries_left <= 0:
+        # change this later
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="You have no tries left. Wait for 5 minutes to retry.")
+        return
 
     try:
         await client.sign_in(phone=number, code=code, phone_code_hash=phone_code_hash)
     except PhoneCodeInvalidError as e:
-        user_info[user_id]["tries_left"] -= 1
+        app_user.tries_left -= 1
         print(e)
-        text = f"Could not login.\nYou have {user_info[user_id]["tries_left"]} left"
+        text = f"Could not login.\nYou have {app_user.tries_left} left"
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
-        if user_info[user_id]["tries_left"] == 0:
-            await client.disconnect()
+        if app_user.tries_left == 0:
+            client.disconnect()
     except SessionPasswordNeededError as e:
         print(e)
-        user_info[user_id]["status"] = REQUIRES_PASSWORD
+        app_user.tries_left = UserState.WAIT_FOR_PASSWORD
         text = "Two-steps verification is enabled and a password is required:"
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
     else:
@@ -283,7 +320,7 @@ async def process_code(update: Update, context, code):
 
 async def process_password(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
+    client = user_info[user_id].client
 
     try:
         await client.sign_in(password=text)
@@ -295,25 +332,24 @@ async def process_password(update: Update, context: ContextTypes.DEFAULT_TYPE, t
 
 async def successful_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
+    client = user_info[user_id].client
 
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text="Successfully signed in.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Successfully signed in.")
     cur.execute("""
-                INSERT INTO app_user (user_id,
-                                      string_session,
-                                      set_read_after_summary,
-                                      set_read_after_search,
-                                      allow_all,
-                                      allowed_chats)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """, (user_id, client.session.save(), False, False, True, []))
+    INSERT INTO app_user (user_id,
+                          string_session,
+                          set_read_after_summary,
+                          set_read_after_search,
+                          allow_all,
+                          allowed_dialogs)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    """, (user_id, client.session.save(), False, False, True, []))
     connection.commit()
-    user_info[user_id]["status"] = AUTHENTICATED
+    user_info[user_id].status = UserState.AUTHENTICATED
 
 # async def process_qr_code(update: Update, context):
 #     user_id = update.effective_user.id
-#     client = user_info[user_id]["client"]
+#     client = user_info[user_id].client
 #     qr_login = await client.qr_login()
 #
 #     print(qr_login.url)
@@ -339,36 +375,44 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     user_id = update.effective_user.id
-    status = user_info[user_id]["status"]
-    dialog = user_info[user_id]["last_read"]
-    client = user_info[user_id]["client"]
+    app_user = user_info[user_id]
+    status = app_user.status
+    dialog = app_user.last_read
+    client = app_user.client
     query = update.callback_query
+
+    reset_idle_timer(user_id)
 
     await query.answer()
     await query.delete_message()
 
-    if status == WAIT_FOR_READ:
+    if status == UserState.WAIT_FOR_READ:
         if query.data == "Yes":
             await client.send_read_acknowledge(dialog[0], clear_mentions=True, clear_reactions=True)
         await menu(update, context, query)
-        user_info[user_id]["status"] = AUTHENTICATED
+        user_info[user_id].status = UserState.AUTHENTICATED
     elif query.data == "summarize":
-        await summarize(update, context)
+        await summarize_request(update, context)
     elif query.data == "search":
-        await search(update, context)
+        await search_request(update, context)
     elif query.data == "settings":
         await settings(update, context)
     elif query.data in ["allow_all", "set_read_after_summary", "preloading"]:
-        cur.execute("""
+        column = query.data
+        cur.execute(f"""
         UPDATE app_user
-        SET %s = NOT %s
+        SET {column} = NOT {column}
         WHERE user_id = %s
-        """, (query.data, query.data, update.effective_user.id))
+        """, (user_id,))
         connection.commit()
+
+        current_value = getattr(user_info[user_id], column)
+        setattr(user_info[user_id], column, not current_value)
+        print(app_user.preloading)
         await settings(update, context)
-    elif query.data == "allowed_chats":
+    elif query.data == "allowed_dialogs":
         cur.execute("""
-        SELECT allowed_chats
+        SELECT allowed_dialogs
         FROM app_user
         WHERE user_id = %s
         """, (update.effective_user.id,))
@@ -396,11 +440,11 @@ async def get_message_info(data, message):
         "text": full_text
     })
 
-async def summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_authentication(update, context):
         return
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
+    client = user_info[user_id].client
 
     unread_dialogs = []
     index = 1
@@ -434,15 +478,15 @@ async def summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Choose which chat you want to summarize, "
           f"that is a number from 0 to {len(unread_dialogs)}, where 0 means none.")
 
-    user_info[user_id]["status"] = WAIT_FOR_SUMMARIZE_CHAT
-    user_info[user_id]["unread_dialogs"] = unread_dialogs
+    user_info[user_id].status = UserState.WAIT_FOR_SUMMARIZE_CHAT
+    user_info[user_id].dialogs = unread_dialogs
 
 async def process_summarize_query(update: Update, context, text=""):
     if not update.effective_user:
         return
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
-    unread_dialogs = user_info[user_id]["unread_dialogs"]
+    client = user_info[user_id].client
+    unread_dialogs = user_info[user_id].dialogs
     dialog_id = text.split()[0]
     try:
         dialog_id = int(dialog_id)
@@ -451,7 +495,7 @@ async def process_summarize_query(update: Update, context, text=""):
         return
     if dialog_id == 0:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Thank you for your time.")
-        user_info[user_id]["status"] = AUTHENTICATED
+        user_info[user_id].status = UserState.AUTHENTICATED
         return
     if dialog_id < 0 or dialog_id > len(unread_dialogs):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Your choice is out of range. Try again.")
@@ -559,53 +603,56 @@ async def process_summarize_query(update: Update, context, text=""):
     ]
 
     await update.message.reply_text(text="Mark chat as read?", reply_markup=InlineKeyboardMarkup(keyboard))
-    user_info[user_id]["status"] = WAIT_FOR_READ
-    user_info[user_id]["last_read"] = chosen_dialog
+    user_info[user_id].status = UserState.WAIT_FOR_READ
+    user_info[user_id].last_read = chosen_dialog
 
 
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await check_authentication(update, context):
         return
 
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
+    app_user = user_info[user_id]
+    client = user_info[user_id].client
 
     dialogs = await client.get_dialogs()
     dialog_names = [dialog.name for dialog in dialogs]
 
-    # poll cant have more than 12 options
+    dialogs = app_user.allowed_dialogs if not app_user.allow_all else await client.get_dialogs()
 
-    message = await context.bot.send_poll(question="Choose in which chats you want to search.",
-                                options=dialog_names,
-                                allows_multiple_answers=True,
-                                is_anonymous=False,
-                                chat_id=update.effective_chat.id)
+    text = "Choose in which chats you want to search. Separate chats indexes by coma. All whitespaces will be ignored."
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    dialogs_text = ""
+    for index, dialog in enumerate(dialogs, start=1):
+        if index != 1:
+            dialogs_text += '\n'
+        dialogs_text += f"{index}) {dialog.name}"
 
-    user_info[user_id]["status"] = WAIT_FOR_SEARCH_CHAT
-    user_info[user_id]["given_dialogs"] = dialogs
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=dialogs_text)
+    user_info[user_id].status = UserState.WAIT_FOR_SEARCH_CHAT
+    user_info[user_id].dialogs = dialogs
 
-    poll_messages[message.poll.id] = {
-        "chat_id": message.chat_id,
-        "message_id": message.message_id
-    }
+async def process_search_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, text) -> None:
+    try:
+        indexes = [int(index) for index in text.split(",")]
+    except ValueError:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid input. Try again:")
+        return
 
-async def process_search_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
-    given_dialogs = user_info[user_id]["given_dialogs"]
-    queried_dialogs = []
-    if update.poll_answer and update.poll_answer.option_ids:
-        queried_dialogs = [given_dialogs[index] for index in update.poll_answer.option_ids]
 
-    user_info[user_id]["status"] = WAIT_FOR_SEARCH_TEXT
-    user_info[user_id]["given_dialogs"] = queried_dialogs
+    given_dialogs = user_info[user_id].dialogs
+    queried_dialogs = [given_dialogs[index] for index in indexes]
+
+    user_info[user_id].status = UserState.WAIT_FOR_SEARCH_TEXT
+    user_info[user_id].dialogs = queried_dialogs
 
     await context.bot.send_message(chat_id=poll_messages[update.poll_answer.poll_id]["chat_id"], text="Enter your query bellow:")
 
 async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
-    client = user_info[user_id]["client"]
-    queried_dialogs = user_info[user_id]["given_dialogs"]
+    client = user_info[user_id].client
+    queried_dialogs = user_info[user_id].dialogs
 
     headers = {
         "Content-Type": "application/json"
@@ -661,43 +708,19 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def check_authentication(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    phone_number_text = "To use this bot you need to be logged into your account.\nPlease enter your phone number below:"
     user_id = update.effective_user.id
-    if user_id in user_info:
-        status = user_info[user_id]["status"]
-        if status < AUTHENTICATED:
-            user_info[user_id]["status"] = WAIT_FOR_PHONE_NUMBER
-            phone_number_text = "To use this bot you need to be logged into your account.\nPlease enter your phone number below:"
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=phone_number_text)
-        return status >= AUTHENTICATED
 
-    cur.execute("select * from app_user where user_id = %s", (user_id,))
-    result = cur.fetchone()
-    if result is None:
-        user_info[user_id] = {
-            "status": WAIT_FOR_PHONE_NUMBER,
-            "client": TelegramClient(StringSession(), API_ID, API_HASH),
-            "phone_num": None,
-            "phone_code_hash": None,
-            "tries_left": 5,
-            "unread_dialogs": [],
-            "given_dialogs": [],
-            "last_read": None
-        }
-
-        phone_number_text = "To use this bot you need to be logged into your account.\nPlease enter your phone number below:"
+    if user_id in user_info and user_info[user_id].status < UserState.AUTHENTICATED:
+        user_info[user_id].status = UserState.WAIT_FOR_PHONE_NUMBER
         await context.bot.send_message(chat_id=update.effective_chat.id, text=phone_number_text)
-    else:
-        session_string = result[1]
-        client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
-        await client.connect()
-        user_info[user_id] = {
-            "status": AUTHENTICATED,
-            "client": client,
-            "unread_dialogs": [],
-            "given_dialogs": [],
-            "last_read": None
-        }
-    return result is not None
+    elif user_id not in user_info:
+        user_info[user_id] = AppUser(
+            UserState.WAIT_FOR_PHONE_NUMBER,
+            TelegramClient(StringSession(), API_ID, API_HASH)
+        )
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=phone_number_text)
+    return user_info[user_id].status >= UserState.AUTHENTICATED
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_text = "Welcome to Busy Lazy Bot!\n"\
@@ -705,48 +728,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
            "and summarize your unread groups without the need to read them."
     await context.bot.send_message(chat_id=update.effective_chat.id, text=start_text)
 
+    reset_idle_timer(update.effective_user.id)
+
     if await check_authentication(update, context):
-        user_info[update.effective_user.id]["status"] = AUTHENTICATED
+        user_info[update.effective_user.id].status = UserState.AUTHENTICATED
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in user_info or user_info[update.effective_user.id]["status"] == LOGGED_OUT:
+    if update.effective_user.id not in user_info or user_info[update.effective_user.id].status == UserState.LOGGED_OUT:
         return
 
     text = None
     if update.message:
         text = update.message.text
 
-    status = user_info[update.effective_user.id]["status"]
-    if status == WAIT_FOR_PHONE_NUMBER:
+    status = user_info[update.effective_user.id].status
+    if status == UserState.WAIT_FOR_PHONE_NUMBER:
         await process_phone_number(update, context, text)
-    elif status == WAIT_FOR_CODE:
+    elif status == UserState.WAIT_FOR_CODE:
         await process_code(update, context, text)
-    elif status == REQUIRES_PASSWORD:
+    elif status == UserState.WAIT_FOR_PASSWORD:
         await process_password(update, context, text)
-    elif status == WAIT_FOR_SUMMARIZE_CHAT:
+    elif status == UserState.WAIT_FOR_SUMMARIZE_CHAT:
         await process_summarize_query(update, context, text)
-    elif status == WAIT_FOR_SEARCH_CHAT:
+    elif status == UserState.WAIT_FOR_SEARCH_CHAT:
         await process_search_chat(update, context)
-    elif status == WAIT_FOR_SEARCH_TEXT:
+    elif status == UserState.WAIT_FOR_SEARCH_TEXT:
         await process_search_text(update, context, text)
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_authentication(update, context):
         return
-
-    cur.execute("""
-    SELECT *
-    FROM app_user
-    WHERE user_id = %s
-    """, (update.effective_user.id,))
-    user = cur.fetchone()
-    allow_all = "ON" if user.allow_all else "OFF"
-    set_read_after_summary = "ON" if user.set_read_after_summary else "OFF"
-    preloading = "ON" if user.preloading else "OFF"
-    history_size = user.history_size
+    user_id = update.effective_user.id
+    app_user = user_info[user_id]
+    allow_all = "ON" if app_user.allow_all else "OFF"
+    set_read_after_summary = "ON" if app_user.set_read_after_summary else "OFF"
+    preloading = "ON" if app_user.preloading else "OFF"
+    history_size = app_user.history_size
     keyboard = [
         [
-            InlineKeyboardButton(text="Allowed chats", callback_data="allowed_chats"),
+            InlineKeyboardButton(text="Allowed dialogs", callback_data="allowed_dialogs"),
             InlineKeyboardButton(text=f"Allow all: {allow_all}", callback_data="allow_all")
         ],
         [
@@ -762,31 +782,40 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Settings", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def log_out(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # add confirmation
+async def log_out_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [
+            InlineKeyboardButton(text="Yes, I do.", callback_data=True),
+            InlineKeyboardButton(text="No, I do not.", callback_data=False)
+        ]
+    ]
+    await context.bot.send_message(chat_id=update.effective_chat.id,
+                                   text="Do you wish do log out and delete all your data?",
+                                   reply_markup=InlineKeyboardMarkup(keyboard))
 
+async def log_out_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("""
-    DELETE FROM app_user
+    DELETE
+    FROM app_user
     WHERE user_id = %s
     """, (update.effective_user.id,))
 
     cur.execute("""
-    DELETE FROM message m
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM app_user_message aum
-        WHERE aum.message_id = m.message_id
-            AND aum.chat_id != m.chat_id
-    )
+    DELETE
+    FROM message m
+    WHERE NOT EXISTS (SELECT 1
+                      FROM app_user_message aum
+                      WHERE aum.message_id = m.message_id
+                        AND aum.chat_id != m.chat_id)
     """)
     connection.commit()
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="You've successfully logged out.")
-
     if update.effective_user.id in user_info:
         del user_info[update.effective_user.id]
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="You've successfully logged out.")
 
 async def main():
+    await initialize_users()
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
@@ -797,11 +826,11 @@ if __name__ == "__main__":
     initialize_db()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("summarize", summarize))
-    application.add_handler(CommandHandler("search", search))
+    application.add_handler(CommandHandler("summarize", summarize_request))
+    application.add_handler(CommandHandler("search", search_request))
     application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("settings", settings))
-    application.add_handler(CommandHandler("log_out", log_out))
+    application.add_handler(CommandHandler("log_out", log_out_request))
     application.add_handler(CallbackQueryHandler(process_button))
     application.add_handler(PollAnswerHandler(process_search_chat))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
