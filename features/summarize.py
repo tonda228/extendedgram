@@ -1,0 +1,211 @@
+import json
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+from telethon import functions
+from telethon.tl.types import User, Channel
+
+from bot.commands.menu import menu
+from classes import UserState
+from database import cur
+from database.dialogs import get_allowed_dialogs, get_unread_count
+from database.messages import store_unsaved_messages
+from settings import settings
+from state import user_info
+from utils import check_authentication, reset_idle_timer, get_message_info
+from llm import requests_client, URL
+
+
+async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_authentication(update, context):
+        return
+    user_id = update.effective_user.id
+
+    reset_idle_timer(user_id)
+
+    await context.bot.send_message(chat_id=update.effective_chat.id,
+                                   text=f"Choose which chat you want to summarize.")
+    dialogs_text = ""
+
+    allowed_dialogs = await get_allowed_dialogs(user_id)
+    unread_dialogs = [dialog for dialog in allowed_dialogs if get_unread_count(dialog) > 0]
+    for index, dialog in enumerate(unread_dialogs, start=1):
+        if index != 1:
+            dialogs_text += "\n"
+        unread_count = get_unread_count(dialog)
+        chat_name = f"{dialog[0].title}"
+        if dialog[1]:
+            chat_name += f"|{dialog[1].title}"
+
+        dialogs_text += f"{index}) In {chat_name}: {unread_count} unread message{"" if unread_count == 1 else "s"}"
+
+
+    if len(unread_dialogs) == 0:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text="No dialog is allowed. You can change it in settings")
+        await menu(update, context)
+        return
+
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton(text="Back", callback_data="back")]])
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=dialogs_text,
+        reply_markup=back_button
+    )
+
+    user_info[user_id].status = UserState.WAIT_FOR_SUMMARIZE_CHAT
+    user_info[user_id].dialogs = unread_dialogs
+
+async def process_summarize_query(update: Update, context, text=""):
+    if not update.effective_user:
+        return
+    user_id = update.effective_user.id
+    app_user = user_info[user_id]
+    client = user_info[user_id].client
+    unread_dialogs = user_info[user_id].dialogs
+    dialog_id = text.split()[0]
+    try:
+        dialog_id = int(dialog_id)
+    except ValueError:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid argument. Try again.")
+        return
+    # if dialog_id == 0:
+    #     await context.bot.send_message(chat_id=update.effective_chat.id, text="Thank you for your time.")
+    #     await menu(update, context)
+    #     return
+    if dialog_id < 0 or dialog_id > len(unread_dialogs):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Your choice is out of range. Try again.")
+        return
+
+    chosen_dialog = unread_dialogs[dialog_id - 1]
+    data = []
+    messages_count = chosen_dialog[0].unread_count if not chosen_dialog[1] else chosen_dialog[1].unread_count
+
+    message = await context.bot.send_message(chat_id=update.effective_chat.id,
+                                   text="Downloading required messages. It might take a few minutes.")
+    reset_idle_timer(user_id, reset=False)
+
+    await store_unsaved_messages(user_id, chosen_dialog, client, False)
+
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message.message_id,
+                                        text="Download is completed.")
+
+    reset_idle_timer(user_id)
+
+    # place this in database
+    if isinstance(chosen_dialog[0], Channel):
+        topic_id = chosen_dialog[1].id if chosen_dialog[1] else 0
+
+        cur.execute("""
+        select * 
+        from (select pm.*, user_name, title
+            from public_message pm
+            join dialog d
+                on d.dialog_id = pm.channel_id
+            left join telegram_user tu
+                on pm.sender_id = tu.user_id
+            where channel_id = %s
+               and topic_id = %s
+            order by message_id desc
+            limit %s)
+        order by message_id asc
+        """, (chosen_dialog[0].id, topic_id, messages_count))
+        messages = cur.fetchall()
+    else:
+        cur.execute("""
+        select *
+        from (select pm.*, user_name, title
+              from private_message pm
+              join dialog d using (dialog_id, user_id)
+              left join telegram_user tu
+                  on pm.sender_id = tu.user_id
+              where pm.dialog_id = %s
+                and pm.user_id = %s
+              order by message_id desc
+              limit %s)
+        order by message_id asc
+        """, (chosen_dialog[0].id, user_id, messages_count))
+        messages = cur.fetchall()
+
+
+    for message in messages:
+        await get_message_info(data, message)
+
+    response_format = ("["
+                       "     {"
+                       "         start_message_id: ...,"
+                       "         end_message_id: ...,"
+                       "         topic: ...,"
+                       "         summary: ..."
+                       "     }"    
+                       "]")
+    request_data = {
+        "model": "docker.io/ai/qwen3-vl:8B",
+        "messages": [
+            {
+                "role": "system",
+                "content":  "Summarize the messages very concisely. "
+                            "For each message, you first receive the sender name and then the message. "
+                            "Group related messages into topics, but do not merge unrelated conversations. "
+                            "For each topic, include the first and last message IDs. "
+                            "Return at most 20 topics. "
+                            "Prioritize only important information, decisions, questions, plans, and conclusions. "
+                            "Ignore greetings, repetition, jokes, filler, and minor details unless they are necessary to understand the topic. "
+                            "For every 20 input messages, produce approximately 1 topic summary when possible. "
+                            "Each topic summary should normally be 1-3 sentences and no more than 60 words. "
+                            "Use a surface-level summary only: do not retell the conversation message by message. "
+                            "Do not include examples, background explanations, or details that are not essential. "
+                            "If several messages repeat the same idea, mention it only once. "
+                            "If the conversation is short or contains little important information, return fewer topics rather than adding detail. "
+                            "Add information about who says what if that person talks about his situation "
+                            f"Response give in json in following format:\n {response_format}"
+
+            },
+            {
+                "role": "user",
+                "content": data
+            }
+        ]
+    }
+    while True:
+        try:
+            response = await requests_client.post(URL, json=request_data)
+            results = json.loads(response.json()["choices"][0]["message"]["content"])
+        except json.decoder.JSONDecodeError:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Error occurred. Retrying...")
+        else:
+            break
+
+    for index, result in enumerate(results, start=1):
+        messages = ""
+        if isinstance(chosen_dialog[0], Channel):
+            url_start = await client(functions.channels.ExportMessageLinkRequest(
+                channel=chosen_dialog[0],
+                id=result["start_message_id"]
+            ))
+            url_end = await client(functions.channels.ExportMessageLinkRequest(
+                channel=chosen_dialog[0],
+                id=result["end_message_id"]
+            ))
+            link_start = f"<a href='{url_start.link}'>here</a>"
+            link_end = f"<a href='{url_end.link}'>here</a>"
+            messages = f"From {link_start} to {link_end}\n"
+        await update.message.reply_html(text=f"{index}) {result["topic"]}\n"
+                                             f"{messages}{result["summary"]}",
+                                        disable_web_page_preview=True)
+
+
+    if app_user.set_read_after_summary:
+        await app_user.client.send_read_acknowledge(chosen_dialog[0], clear_mentions=True, clear_reactions=True)
+        await menu(update, context)
+        return
+    keyboard = [
+        [
+            InlineKeyboardButton(text="Yes", callback_data="Yes"),
+            InlineKeyboardButton(text="No", callback_data="No")
+        ]
+    ]
+
+    await update.message.reply_text(text="Mark chat as read?", reply_markup=InlineKeyboardMarkup(keyboard))
+    user_info[user_id].status = UserState.WAIT_FOR_READ
+    user_info[user_id].last_read = chosen_dialog
