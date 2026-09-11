@@ -1,4 +1,3 @@
-# check those
 import os
 import datetime as dt
 
@@ -11,9 +10,55 @@ from llm.completions import translate_image
 from llm.embeddings import create_message_embedding
 from state import user_info
 from . import cur, connection
-from .dialogs import store_dialog
+from .dialogs import store_dialog, get_unread_count
 from .users import store_telegram_user
 
+async def store_message(message: Message, dialog: tuple[Dialog, ForumTopic | None], user_id: int, add_embeddings=False):
+    topic_id = dialog[1].id if dialog[1] else 0
+    media_description = None
+    if message.photo and not message.document:
+        if not os.path.exists("media"):
+            os.makedirs("media")
+
+        media_description = await translate_image(message)
+
+    embedding = None if not add_embeddings else await create_message_embedding(dialog, message, user_id,
+                                                                               media_description, False)
+    sender = await message.get_sender()
+
+    sender_id = None
+    if isinstance(sender, User):
+        if sender.username:
+            sender_name = sender.username
+        else:
+            sender_name = sender.first_name + (sender.last_name if sender.last_name else "")
+        store_telegram_user(sender.id, sender_name)
+        sender_id = sender.id
+
+    if isinstance(dialog[0], Channel):
+        store_public_message(message, dialog[0].id, topic_id, sender_id, media_description, embedding)
+    else:
+        store_private_message(message, dialog[0].id, user_id, sender_id, media_description, embedding)
+
+    connection.commit()
+
+def delete_private_message(user_id: int, message_id: int):
+    cur.execute("""
+    DELETE
+    FROM private_message
+    WHERE user_id = %s AND
+          message_id = %s
+    """, (user_id, message_id))
+    connection.commit()
+
+def delete_public_message(channel_id: int, message_id: int):
+    cur.execute("""
+    DELETE
+    FROM public_message
+    WHERE channel_id = %s AND
+          message_id = %s
+    """, (channel_id, message_id))
+    connection.commit()
 
 def store_private_message(message: Message, dialog_id: int, user_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
     cur.execute("""
@@ -100,16 +145,11 @@ async def store_unsaved_messages(user_id: int,
                                  dialog,
                                  client: TelegramClient,
                                  add_embeddings = False) -> None:
-    # check this one more time
-
     saved_id = 0
-    topic_id = dialog[1].id if dialog[1] else 0
-    limit = dialog[1].unread_count if dialog[1] else dialog[0].unread_count
+    limit = get_unread_count(dialog) if not add_embeddings else None
     days = user_info[user_id].history_size
     if days == 0:
         days = 10
-    if add_embeddings:
-        limit = None
     store_dialog(dialog, user_id)
 
     # check stored messages here
@@ -136,31 +176,4 @@ async def store_unsaved_messages(user_id: int,
             saved_id += 1
             continue
 
-
-        # find way to only download photo without videos and files
-        media_description = None
-        if message.photo and not message.document:
-            if not os.path.exists("media"):
-                os.makedirs("media")
-
-            media_description = await translate_image(message)
-
-
-        embedding = None if not add_embeddings else await create_message_embedding(dialog, message, user_id, media_description, False)
-        sender = await message.get_sender()
-
-        sender_id = None
-        if isinstance(sender, User):
-            if sender.username:
-                sender_name = sender.username
-            else:
-                sender_name = sender.first_name + (sender.last_name if sender.last_name else "")
-            store_telegram_user(sender.id, sender_name)
-            sender_id = sender.id
-
-        if isinstance(dialog[0], Channel):
-            store_public_message(message, dialog[0].id, topic_id, sender_id, media_description, embedding)
-        else:
-            store_private_message(message, dialog[0].id, user_id, sender_id, media_description, embedding)
-
-        connection.commit()
+        await store_message(message, dialog, user_id, add_embeddings)

@@ -10,12 +10,11 @@ from features.summarize import summarize_request
 from settings import settings
 from utils import initialize_users
 
-# add event handlings
 # add more options when choosing allowed dialogs
 # add admin?
-# add back buttons
 # change settings
 # maybe change the way I list dialogs
+# sync dialogs
 
 async def main():
     await initialize_users()
