@@ -8,6 +8,8 @@ from telethon.sessions import StringSession
 
 from classes import AppUser, UserState, AppUserPreloading
 from database import cur
+from database.users import store_telegram_user
+from features import event_handlers
 from features.preloading import reset_idle_timer
 from state import user_preloading, user_info
 
@@ -56,8 +58,19 @@ async def initialize_users() -> None:
     for app_user in app_users:
         client = TelegramClient(StringSession(app_user.string_session), API_ID, API_HASH)
         await client.connect()
+
+        #update user info
+        cur_user = await client.get_me()
+        if cur_user.username:
+            user_name = cur_user.username
+        else:
+            user_name = cur_user.first_name + (cur_user.last_name if cur_user.last_name else "")
+        store_telegram_user(cur_user.id, user_name)
+
         user_info[app_user.user_id] = AppUser(UserState.AUTHENTICATED, client, app_user)
         user_preloading[app_user.user_id] = AppUserPreloading()
+        await event_handlers.create_new_message_handler(app_user.user_id)
+        await event_handlers.create_delete_message_handler(app_user.user_id)
         reset_idle_timer(app_user.user_id)
 
 async def get_message_info(data, message):
