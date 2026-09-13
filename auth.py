@@ -25,7 +25,9 @@ async def process_phone_number(update: Update, context, number):
     result = await client.send_code_request(number)
     user_info[user_id].phone_code_hash = result.phone_code_hash
 
-    code_text = "Please enter your code:"
+    code_text = ("Please enter your code:\n\n!!!NOTICE!!!\nIf you are trying to log in using the same account "
+                 "as you are currently logged in, separate code using whitespaces like this:\n * * * * *. "
+                 "Telegram will not let you log in otherwise.")
     await context.bot.send_message(chat_id=update.effective_chat.id, text=code_text)
     user_info[user_id].status = UserState.WAIT_FOR_CODE
 
@@ -83,8 +85,9 @@ async def successful_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                           string_session,
                           set_read_after_summary,
                           set_read_after_search,
-                          allow_all)
-    VALUES (%s, %s, %s, %s, %s)
+                          allow_all,
+                          is_admin)
+    VALUES (%s, %s, %s, %s, %s, DEFAULT)
     """, (user_id, client.session.save(), False, False, True))
     connection.commit()
     user_info[user_id].status = UserState.AUTHENTICATED

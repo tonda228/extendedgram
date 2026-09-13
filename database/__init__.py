@@ -18,12 +18,19 @@ register_vector(connection)
 cur = connection.cursor()
 
 
+def drop_tables() -> None:
+    cur.execute("""
+    DROP TABLE IF EXISTS app_user CASCADE;
+    DROP TABLE IF EXISTS telegram_user CASCADE;
+    DROP TABLE IF EXISTS channel CASCADE;
+    DROP TABLE IF EXISTS dialog CASCADE;
+    DROP TABLE IF EXISTS dialog_priority CASCADE;
+    DROP TABLE IF EXISTS public_message CASCADE;
+    DROP TABLE IF EXISTS private_message CASCADE;
+    """)
 
 def initialize_db() -> None:
-    cur.execute("""
-                DROP TABLE IF EXISTS message;
-                DROP TABLE IF EXISTS app_user_message;
-
+    cur.execute("""                    
                 CREATE TABLE IF NOT EXISTS app_user
                 (
                     user_id                BIGINT PRIMARY KEY REFERENCES telegram_user (user_id),
@@ -32,7 +39,9 @@ def initialize_db() -> None:
                     set_read_after_search  BOOLEAN NOT NULL,
                     allow_all              BOOLEAN NOT NULL,
                     preloading             BOOLEAN NOT NULL,
-                    history_size           BIGINT  NOT NULL
+                    history_size           BIGINT  NOT NULL, 
+                    is_admin               BOOLEAN NOT NULL DEFAULT FALSE,
+                    last_status            BIGINT
                 );
 
                 CREATE TABLE IF NOT EXISTS telegram_user
@@ -49,11 +58,11 @@ def initialize_db() -> None:
 
                     PRIMARY KEY (channel_id, topic_id)
                 );
-
+                
                 CREATE TABLE IF NOT EXISTS dialog
                 (
                     dialog_id  BIGINT,
-                    user_id    BIGINT REFERENCES app_user (user_id),
+                    user_id    BIGINT REFERENCES app_user (user_id) ON DELETE CASCADE,
                     title      TEXT    NOT NULL,
                     is_allowed BOOLEAN NOT NULL DEFAULT TRUE,
                     channel_id BIGINT  NULL,
@@ -77,13 +86,12 @@ def initialize_db() -> None:
                         ON DELETE CASCADE
                 );
 
-
                 CREATE TABLE IF NOT EXISTS public_message
                 (
                     message_id        BIGINT,
                     channel_id        BIGINT,
                     topic_id          BIGINT,
-                    sender_id         BIGINT REFERENCES telegram_user (user_id),
+                    sender_id         BIGINT REFERENCES telegram_user (user_id) ON DELETE CASCADE,
                     date_time         TIMESTAMPTZ NOT NULL,
                     text              TEXT,
                     media_description TEXT,
@@ -100,7 +108,7 @@ def initialize_db() -> None:
                     message_id        BIGINT,
                     dialog_id         BIGINT,
                     user_id           BIGINT,
-                    sender_id         BIGINT REFERENCES telegram_user (user_id),
+                    sender_id         BIGINT REFERENCES telegram_user (user_id) ON DELETE CASCADE,
                     date_time         TIMESTAMPTZ NOT NULL,
                     text              TEXT,
                     media_description TEXT,

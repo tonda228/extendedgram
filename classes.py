@@ -30,16 +30,17 @@ class InitializationInfo:
 
 class AppUser:
     def __init__(self, status: UserState, client: telegramclient.TelegramClient, app_user=None):
-        self._status = status
+        self._status = app_user.last_status if (app_user and app_user.last_status) else status
         self.client = client
         self.dialogs = None
         self.last_read = None
 
-        self._init_info = InitializationInfo() if status < UserState.AUTHENTICATED else None
+        self._init_info = InitializationInfo() if self._status < UserState.AUTHENTICATED else None
         self.preloading = False if not app_user else app_user.preloading
         self.history_size = 0 if not app_user else app_user.history_size
-        self.set_read_after_summary = False if not app_user else app_user.history_size
+        self.set_read_after_summary = False if not app_user else app_user.set_read_after_summary
         self.allow_all = True if not app_user else app_user.allow_all
+        self.is_admin = False if not app_user else app_user.is_admin
 
     @property
     def status(self):
