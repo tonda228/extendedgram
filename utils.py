@@ -17,35 +17,32 @@ from state import user_preloading, user_info
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 
-def button_name_to_index(name):
-    match name:
-        case "allow_all":
-            return 0, 1
-        case "set_read_after_summary":
-            return 1, 0
-        case "preloading":
-            return 1, 1
-    return None
 
-
-def update_inline_button(button, column, new_state):
-    if button.callback_data != column:
+def update_inline_button(button, data, new_state=None, user_id=None, save_to=None):
+    if button.callback_data != data:
         return InlineKeyboardButton(text=button.text, callback_data=button.callback_data)
 
-    new_text = button.text.split(":")[0] + ": " + ("ON" if new_state else "OFF")
-    return InlineKeyboardButton(text=new_text, callback_data=column)
-    # mark_up[row][col] = new_button
-    # await context.bot.edit_message_reply_markup(chat_id=update.effective_chat.id,
-    #                                             message_id=query.message.message_id,
-    #                                             reply_markup=mark_up)
+    split_text = button.text.split(": ")
+    if not new_state:
+        new_state = split_text[-1] == "❌"
+    if save_to:
+        app_user = user_info[user_id]
+        dest = getattr(app_user, save_to)
+        if new_state:
+            dest.add(data)
+        else:
+            dest.remove(data)
+
+    new_text = "".join(button.text.split(":")[:-1]) + ": " + ("✅" if new_state else "❌")
+    return InlineKeyboardButton(text=new_text, callback_data=data)
 
 
-def update_inline_keyboard(keyboard, column, new_state):
+def update_inline_keyboard(keyboard, data, new_state=None, user_id=None, save_to=None):
     copy = []
     for i, row in enumerate(keyboard):
         copy.append(list())
         for button in row:
-            copy[i].append(update_inline_button(button, column, new_state))
+            copy[i].append(update_inline_button(button, data, new_state, user_id, save_to))
     return InlineKeyboardMarkup(copy)
 
 async def initialize_users() -> None:

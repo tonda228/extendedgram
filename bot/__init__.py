@@ -4,13 +4,13 @@ from telegram import Update, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, ContextTypes
 
 from auth import process_phone_number, process_code, process_password
-from bot.commands.logout import log_out_request
+from bot.commands.logout import log_out_request, log_out_confirmation
 from classes import UserState
 from database.users import flip_user_state
 from bot.commands.menu import menu
 from features.preloading import reset_idle_timer
 
-from features.search import search_request, process_search_chat, process_search_text
+from features.search import search_request, process_search_chat, process_search_text, flip_search_chat_state
 
 from settings import settings
 from settings.allowed_dialogs import query_new_allowed_dialogs, display_allowed_dialogs, change_allowed_dialogs
@@ -35,11 +35,29 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await query.answer()
 
-    if app_user.status == UserState.WAIT_FOR_READ:
+    if query.data == "summarize":
+        await summarize_request(update, context)
+    elif query.data == "search":
+        await search_request(update, context)
+    elif query.data == "settings":
+        await settings(update, context)
+    elif query.data == "back":
+        await menu(update, context)
+
+    elif app_user.status == UserState.WAIT_FOR_SUMMARIZE_CHAT:
+        await process_summarize_query(update, context, query)
+
+    elif app_user.status == UserState.WAIT_FOR_READ:
         if query.data == "Yes":
             await app_user.client.send_read_acknowledge(app_user.last_read[0], clear_mentions=True, clear_reactions=True)
         await query.delete_message()
         await menu(update, context)
+
+    elif app_user.status == UserState.WAIT_FOR_SEARCH_CHAT:
+        if query.data == "confirm":
+            await process_search_chat(update, context)
+        else:
+            await flip_search_chat_state(update, context, query)
 
     elif app_user.status == UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION:
         if query.data == "Yes":
@@ -48,16 +66,12 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await settings(update, context)
         await query.delete_message()
 
-    elif app_user.status == UserState.WAIT_FOR_MENU_CHOICE:
-        if query.data == "summarize":
-            await summarize_request(update, context)
-        elif query.data == "search":
-            await search_request(update, context)
-        elif query.data == "settings":
-            await settings(update, context)
+    elif app_user.status == UserState.WAIT_FOR_LOG_OUT_CONFIRMATION:
+        await query.delete_message()
+        if query.data == "Yes":
+            await log_out_confirmation(update, context)
 
     elif app_user.status == UserState.WAIT_FOR_SETTINGS_CHOICE:
-        # change it later
         if query.data in ["allow_all", "set_read_after_summary", "preloading"]:
             column = query.data
             flip_user_state(user_id, column)
@@ -85,8 +99,6 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await settings(update, context)
         await query.delete_message()
-    elif query.data == "back":
-        await menu(update, context)
 
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

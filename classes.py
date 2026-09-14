@@ -33,6 +33,8 @@ class AppUser:
         self._status = app_user.last_status if (app_user and app_user.last_status) else status
         self.client = client
         self.dialogs = None
+        self.chosen_ids = None
+        self.allowed_dialogs_options = None
         self.last_read = None
 
         self._init_info = InitializationInfo() if self._status < UserState.AUTHENTICATED else None

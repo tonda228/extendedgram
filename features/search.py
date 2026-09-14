@@ -10,7 +10,7 @@ from database.messages import store_unsaved_messages, get_best_public_messages, 
 from bot.commands.menu import menu
 from llm.embeddings import create_embedding
 from state import user_info
-from utils import check_authentication, reset_idle_timer, get_message_info
+from utils import check_authentication, reset_idle_timer, get_message_info, update_inline_keyboard
 
 
 async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -24,46 +24,42 @@ async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     dialogs = await get_allowed_dialogs(user_id)
 
-    text = "Choose in which chats you want to search. Separate chats indexes by coma. All whitespaces will be ignored."
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
-    dialogs_text = ""
-
-    for index, dialog in enumerate(dialogs, start=1):
-        if index != 1:
-            dialogs_text += '\n'
+    keyboard = []
+    for index, dialog in enumerate(dialogs):
         dialog_name = dialog[0].title
         if dialog[1]:
             dialog_name += f"|{dialog[1].title}"
-        dialogs_text += f"{index}) {dialog_name}"
+        dialog_text = dialog_name + ": ❌"
+        keyboard.append([InlineKeyboardButton(text=dialog_text, callback_data=str(index))])
 
-
-    back_button = InlineKeyboardMarkup([[InlineKeyboardButton(text="Back", callback_data="back")]])
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=dialogs_text, reply_markup=back_button)
+    keyboard.append([InlineKeyboardButton(text="Confirm my choice", callback_data="confirm")])
+    keyboard.append([InlineKeyboardButton(text="Back", callback_data="back")])
+    markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(chat_id=update.effective_chat.id,
+                                   text="Choose in which chats you want to search.",
+                                   reply_markup=markup)
     app_user.status = UserState.WAIT_FOR_SEARCH_CHAT
+    app_user.chosen_ids = set()
     app_user.dialogs = dialogs
 
-async def process_search_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, text) -> None:
+
+
+async def flip_search_chat_state(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
+    keyboard = query.message.reply_markup.inline_keyboard
+    new_markup = update_inline_keyboard(keyboard, query.data, user_id=update.effective_user.id, save_to="chosen_ids")
+
+    await context.bot.edit_message_reply_markup(chat_id=update.effective_chat.id,
+                                                message_id=query.message.message_id,
+                                                reply_markup=new_markup)
+
+async def process_search_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     reset_idle_timer(user_id)
 
     given_dialogs = user_info[user_id].dialogs
     reset_idle_timer(user_id)
 
-    try:
-        indexes = [int(index) for index in text.split(",")]
-    except ValueError:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid input. Try again:")
-        return
-    if 0 in indexes:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Thank you for your time.")
-        user_info[user_id].status = UserState.AUTHENTICATED
-        return
-    for index in indexes:
-        if not (1 <= index <= len(given_dialogs)):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid index. Try again:")
-            return
-
-    queried_dialogs = [given_dialogs[index - 1] for index in indexes]
+    queried_dialogs = [given_dialogs[int(index)] for index in user_info[user_id].chosen_ids]
     for dialog in queried_dialogs:
         update_dialog_priorities(user_id, dialog)
     delete_old_dialog_priorities(user_id)
