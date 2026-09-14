@@ -3,8 +3,8 @@ import datetime as dt
 
 from pgvector import Vector
 from telethon import TelegramClient
-from telethon.tl.custom import Message
-from telethon.tl.types import User, Channel
+from telethon.tl.custom import Message, Dialog
+from telethon.tl.types import User, Channel, ForumTopic
 
 from llm.completions import translate_image
 from llm.embeddings import create_message_embedding
@@ -35,7 +35,8 @@ async def store_message(message: Message, dialog: tuple[Dialog, ForumTopic | Non
         store_telegram_user(sender.id, sender_name)
         sender_id = sender.id
 
-    if isinstance(dialog[0], Channel):
+    is_channel = isinstance(dialog[0], Channel) or (isinstance(dialog[0], Dialog) and isinstance(dialog[0].entity, Channel))
+    if is_channel:
         store_public_message(message, dialog[0].id, topic_id, sender_id, media_description, embedding)
     else:
         store_private_message(message, dialog[0].id, user_id, sender_id, media_description, embedding)
@@ -90,7 +91,7 @@ def store_public_message(message: Message, dialog_id: int, topic_id: int, sender
         ON CONFLICT DO NOTHING
     """, (message.id, dialog_id, topic_id, sender_id, message.date, message.text, media_description, embedding))
 
-def get_public_messages(dialog):
+def get_public_messages(dialog: tuple[Dialog, ForumTopic | None]):
     topic_id = dialog[1].id if dialog[1] else 0
     cur.execute("""
                 SELECT *
@@ -101,7 +102,7 @@ def get_public_messages(dialog):
                 """, (dialog[0].id, topic_id))
     return cur.fetchall()
 
-def get_private_messages(dialog, user_id):
+def get_private_messages(dialog: tuple[Dialog, ForumTopic | None], user_id: int):
     cur.execute("""
                SELECT *
                FROM private_message
@@ -111,7 +112,7 @@ def get_private_messages(dialog, user_id):
                """, (dialog[0].id, user_id))
     return cur.fetchall()
 
-def get_best_public_messages(dialog, embedding):
+def get_best_public_messages(dialog: tuple[Dialog, ForumTopic | None], embedding):
     topic_id = dialog[1].id if dialog[1] else 0
 
     cur.execute("""
@@ -127,7 +128,7 @@ def get_best_public_messages(dialog, embedding):
     """, (dialog[0].id, topic_id, embedding))
     return cur.fetchall()
 
-def get_best_private_messages(user_id, dialog, embedding):
+def get_best_private_messages(user_id: int, dialog: tuple[Dialog, ForumTopic | None], embedding: Vector):
     cur.execute("""
     SELECT pm.*, title, user_name
     FROM private_message pm
@@ -141,8 +142,44 @@ def get_best_private_messages(user_id, dialog, embedding):
     """, (dialog[0].id, user_id, embedding))
     return cur.fetchall()
 
+# come up with better name
+def get_public_messages_for_summarization(channel: tuple[Dialog, ForumTopic | None], messages_count: int):
+    topic_id = channel[1].id if channel[1] else 0
+
+    cur.execute("""
+    select * 
+    from (select pm.*, user_name, title
+        from public_message pm
+        join dialog d
+            on d.dialog_id = pm.channel_id
+        left join telegram_user tu
+            on pm.sender_id = tu.user_id
+        where channel_id = %s
+           and topic_id = %s
+        order by message_id desc
+        limit %s)
+    order by message_id asc
+    """, (channel[0].id, topic_id, messages_count))
+    return cur.fetchall()
+
+def get_private_messages_for_summarization(dialog: tuple[Dialog, None], user_id: int, messages_count: int):
+    cur.execute("""
+    select *
+    from (select pm.*, user_name, title
+          from private_message pm
+          join dialog d using (dialog_id, user_id)
+          left join telegram_user tu
+              on pm.sender_id = tu.user_id
+          where pm.dialog_id = %s
+            and pm.user_id = %s
+          order by message_id desc
+          limit %s)
+    order by message_id asc
+    """, (dialog[0].id, user_id, messages_count))
+    return cur.fetchall()
+
 async def store_unsaved_messages(user_id: int,
-                                 dialog,
+                                 dialog: tuple[Dialog, ForumTopic | None],
                                  client: TelegramClient,
                                  add_embeddings = False) -> None:
     saved_id = 0
@@ -152,8 +189,7 @@ async def store_unsaved_messages(user_id: int,
         days = 10
     store_dialog(dialog, user_id)
 
-    # check stored messages here
-    if isinstance(dialog[0], Channel):
+    if isinstance(dialog[0].entity, Channel):
         saved_messages = get_public_messages(dialog)
     else:
         saved_messages = get_private_messages(dialog, user_id)

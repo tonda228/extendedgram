@@ -7,10 +7,9 @@ from telethon.tl.types import User, Channel
 
 from bot.commands.menu import menu
 from classes import UserState
-from database import cur
 from database.dialogs import get_allowed_dialogs, get_unread_count
-from database.messages import store_unsaved_messages
-from settings import settings
+from database.messages import store_unsaved_messages, get_public_messages_for_summarization, \
+    get_private_messages_for_summarization
 from state import user_info
 from utils import check_authentication, reset_idle_timer, get_message_info
 from llm import requests_client, URL
@@ -23,42 +22,46 @@ async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reset_idle_timer(user_id)
 
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text=f"Choose which chat you want to summarize.")
-    dialogs_text = ""
-
     allowed_dialogs = await get_allowed_dialogs(user_id)
-    unread_dialogs = [dialog for dialog in allowed_dialogs if get_unread_count(dialog) > 0]
-    for index, dialog in enumerate(unread_dialogs, start=1):
-        if index != 1:
-            dialogs_text += "\n"
-        unread_count = get_unread_count(dialog)
-        chat_name = f"{dialog[0].title}"
-        if dialog[1]:
-            chat_name += f"|{dialog[1].title}"
-
-        dialogs_text += f"{index}) In {chat_name}: {unread_count} unread message{"" if unread_count == 1 else "s"}"
-
-
-    if len(unread_dialogs) == 0:
+    if len(allowed_dialogs) == 0:
         await context.bot.send_message(chat_id=update.effective_chat.id,
                                        text="No dialog is allowed. You can change it in settings")
         await menu(update, context)
         return
 
-    back_button = InlineKeyboardMarkup([[InlineKeyboardButton(text="Back", callback_data="back")]])
+    keyboard = []
+    unread_dialogs = [dialog for dialog in allowed_dialogs if get_unread_count(dialog) > 0]
+    for index, dialog in enumerate(unread_dialogs):
+        unread_count = get_unread_count(dialog)
+        chat_name = f"{dialog[0].title}"
+        if dialog[1]:
+            chat_name += f"|{dialog[1].title}"
+
+        dialog_text = f"{chat_name}: {unread_count} unread message{"" if unread_count == 1 else "s"}"
+        keyboard.append([InlineKeyboardButton(text=dialog_text, callback_data=str(index))])
+
+    if len(unread_dialogs) == 0:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text="All dialogs are read. Come back later.")
+        await menu(update, context)
+        return
+
+    keyboard.append([InlineKeyboardButton(text="Back", callback_data="back")])
+    markup = InlineKeyboardMarkup(keyboard)
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=dialogs_text,
-        reply_markup=back_button
+        text="Choose which chat you want to summarize.",
+        reply_markup=markup
     )
 
     user_info[user_id].status = UserState.WAIT_FOR_SUMMARIZE_CHAT
     user_info[user_id].dialogs = unread_dialogs
 
-async def process_summarize_query(update: Update, context, text=""):
+async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
     if not update.effective_user:
         return
+
+    text = query.data
     user_id = update.effective_user.id
     app_user = user_info[user_id]
     client = user_info[user_id].client
@@ -69,15 +72,11 @@ async def process_summarize_query(update: Update, context, text=""):
     except ValueError:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid argument. Try again.")
         return
-    # if dialog_id == 0:
-    #     await context.bot.send_message(chat_id=update.effective_chat.id, text="Thank you for your time.")
-    #     await menu(update, context)
-    #     return
-    if dialog_id < 0 or dialog_id > len(unread_dialogs):
+    if dialog_id < 0 or dialog_id >= len(unread_dialogs):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Your choice is out of range. Try again.")
         return
 
-    chosen_dialog = unread_dialogs[dialog_id - 1]
+    chosen_dialog = unread_dialogs[dialog_id]
     data = []
     messages_count = chosen_dialog[0].unread_count if not chosen_dialog[1] else chosen_dialog[1].unread_count
 
@@ -92,41 +91,10 @@ async def process_summarize_query(update: Update, context, text=""):
 
     reset_idle_timer(user_id)
 
-    # place this in database
     if isinstance(chosen_dialog[0], Channel):
-        topic_id = chosen_dialog[1].id if chosen_dialog[1] else 0
-
-        cur.execute("""
-        select * 
-        from (select pm.*, user_name, title
-            from public_message pm
-            join dialog d
-                on d.dialog_id = pm.channel_id
-            left join telegram_user tu
-                on pm.sender_id = tu.user_id
-            where channel_id = %s
-               and topic_id = %s
-            order by message_id desc
-            limit %s)
-        order by message_id asc
-        """, (chosen_dialog[0].id, topic_id, messages_count))
-        messages = cur.fetchall()
+        messages = get_public_messages_for_summarization(chosen_dialog, messages_count)
     else:
-        cur.execute("""
-        select *
-        from (select pm.*, user_name, title
-              from private_message pm
-              join dialog d using (dialog_id, user_id)
-              left join telegram_user tu
-                  on pm.sender_id = tu.user_id
-              where pm.dialog_id = %s
-                and pm.user_id = %s
-              order by message_id desc
-              limit %s)
-        order by message_id asc
-        """, (chosen_dialog[0].id, user_id, messages_count))
-        messages = cur.fetchall()
-
+        messages = get_private_messages_for_summarization(chosen_dialog, user_id, messages_count)
 
     for message in messages:
         await get_message_info(data, message)
@@ -190,7 +158,7 @@ async def process_summarize_query(update: Update, context, text=""):
             link_start = f"<a href='{url_start.link}'>here</a>"
             link_end = f"<a href='{url_end.link}'>here</a>"
             messages = f"From {link_start} to {link_end}\n"
-        await update.message.reply_html(text=f"{index}) {result["topic"]}\n"
+        await query.message.reply_html(text=f"{index}) {result["topic"]}\n"
                                              f"{messages}{result["summary"]}",
                                         disable_web_page_preview=True)
 
@@ -206,6 +174,6 @@ async def process_summarize_query(update: Update, context, text=""):
         ]
     ]
 
-    await update.message.reply_text(text="Mark chat as read?", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.reply_text(text="Mark chat as read?", reply_markup=InlineKeyboardMarkup(keyboard))
     user_info[user_id].status = UserState.WAIT_FOR_READ
     user_info[user_id].last_read = chosen_dialog
