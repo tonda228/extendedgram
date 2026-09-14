@@ -1,13 +1,14 @@
 import datetime as dt
-from telethon.tl.types import User, Channel
-from telethon import functions
+
+from telethon.tl.custom import Dialog
+from telethon.tl.types import User, Channel, ForumTopic
+from telethon import functions, utils
 
 from state import user_info
 from . import cur, connection
 
-
-def store_channel(channel: Channel):
-    topic_id = channel[1].id if channel[1] else None
+def store_channel(channel):
+    topic_id = channel[1].id if channel[1] else 0
     topic_name = channel[1].title if channel[1] else None
 
     cur.execute("""
@@ -16,26 +17,75 @@ def store_channel(channel: Channel):
         SET topic_name = EXCLUDED.topic_name
     """, (channel[0].id, topic_id, topic_name))
 
-def store_dialog(dialog, user_id):
-    channel_id = dialog[0].id if isinstance(dialog[0], Channel) else None
+def store_dialog(dialog, user_id, is_allowed=False):
+    if isinstance(dialog[0], Dialog):
+        dialog = (dialog[0].entity, dialog[1])
+
+    is_channel = isinstance(dialog[0], Channel)
+
+    channel_id = dialog[0].id if is_channel else None
     topic_id = dialog[1].id if dialog[1] else None
 
-    if isinstance(dialog[0], Channel):
+    if is_channel:
         store_channel(dialog)
 
+    is_user = isinstance(dialog[0], User)
+    if is_user:
+        if dialog[0].username:
+            dialog_title = dialog[0].username
+        else:
+            dialog_title = dialog[0].first_name + (dialog[0].last_name if dialog[0].last_name else "")
+    else:
+        dialog_title = dialog[0].title
+
+    is_allowed = user_info[user_id].allow_all or is_allowed
     cur.execute("""
     INSERT INTO dialog (dialog_id, user_id, title, is_allowed, channel_id, topic_id)
     VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (dialog_id, user_id) DO UPDATE
         SET title = EXCLUDED.title,
             is_allowed = EXCLUDED.is_allowed
-    """, (dialog[0].id, user_id, dialog[0].title, True, channel_id, topic_id))
+    """, (utils.get_peer_id(dialog[0]), user_id, dialog_title, is_allowed, channel_id, topic_id))
 
+def delete_unused_channels():
+    cur.execute("""
+    --delete channels that don't have dialogs connected to them
+    DELETE
+    FROM channel as ch
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM dialog d
+        WHERE d.channel_id = ch.channel_id
+    )""")
+    connection.commit()
+
+def delete_dialog(dialog_id: int, user_id: int):
+    cur.execute("""
+    DELETE
+    FROM dialog
+    WHERE dialog_id = %s AND
+          user_id = %s
+    """, (dialog_id, user_id))
+    connection.commit()
+
+def sync_dialogs(dialogs: list[tuple[Dialog, ForumTopic]], user_id: int):
+    current_dialogs_set = {dialog[0].id for dialog in dialogs}
+    cur.execute("""
+    SELECT dialog_id
+    FROM dialog
+    WHERE user_id = %s
+    """, (user_id, ))
+    saved_dialogs = cur.fetchall()
+
+    for dialog in saved_dialogs:
+        if dialog.dialog_id not in current_dialogs_set:
+            delete_dialog(dialog.dialog_id, user_id)
+    delete_unused_channels()
 
 # cant handle a lot of dialogs due to timeout
 async def get_all_dialogs(user_id: int):
     app_user = user_info[user_id]
     dialogs = []
-    index = 1
+
     async for dialog in app_user.client.iter_dialogs(limit=50):
         if dialog.is_group and getattr(dialog.entity, "forum", False):
             result = await app_user.client(
@@ -51,10 +101,9 @@ async def get_all_dialogs(user_id: int):
                 if topic.unread_count == 0:
                     continue
                 dialogs.append((dialog, topic))
-                index += 1
             continue
         dialogs.append((dialog, None))
-        index += 1
+    sync_dialogs(dialogs, user_id)
     return dialogs
 
 def update_dialog_priorities(user_id, dialog):
@@ -104,7 +153,7 @@ async def get_allowed_dialogs(user_id: int):
 
     allowed_dialogs = []
     for dialog in all_dialogs:
-        if dialog[0].id not in allowed_dialogs_set:
+        if utils.get_peer_id(dialog[0].entity) not in allowed_dialogs_set:
             continue
         allowed_dialogs.append(dialog)
     return allowed_dialogs

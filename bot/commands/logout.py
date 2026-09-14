@@ -3,6 +3,7 @@ from telegram.ext import ContextTypes
 
 from classes import UserState
 from database import connection, cur
+from database.dialogs import delete_unused_channels
 from state import user_info
 
 
@@ -23,16 +24,11 @@ async def log_out_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
     DELETE
     FROM app_user
     WHERE user_id = %s;
+    """, (update.effective_user.id,))
 
-    --delete channels that don't have dialogs connected to them
-    DELETE
-    FROM channel as ch
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM dialog d
-        WHERE d.channel_id = ch.channel_id
-    );
+    delete_unused_channels()
 
+    cur.execute("""
     --delete telegram_users that don't have messages
     DELETE 
     FROM telegram_users as tu
@@ -49,7 +45,7 @@ async def log_out_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
         FROM private_message pb
         WHERE tu.user_id = pb.user_id
     )
-    """, (update.effective_user.id,))
+    """)
     connection.commit()
 
     if update.effective_user.id in user_info:
