@@ -13,9 +13,9 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_idle_timer(user_id)
 
     app_user = user_info[user_id]
-    allow_all = "ON" if app_user.allow_all else "OFF"
-    set_read_after_summary = "ON" if app_user.set_read_after_summary else "OFF"
-    preloading = "ON" if app_user.preloading else "OFF"
+    allow_all = "✅" if app_user.allow_all else "❌"
+    set_read_after_summary = "✅" if app_user.set_read_after_summary else "❌"
+    preloading = "✅" if app_user.preloading else "❌"
     history_size = app_user.history_size
     keyboard = [
         [

@@ -45,6 +45,12 @@ def update_inline_keyboard(keyboard, data, new_state=None, user_id=None, save_to
             copy[i].append(update_inline_button(button, data, new_state, user_id, save_to))
     return InlineKeyboardMarkup(copy)
 
+def get_full_chat_name(dialog):
+    chat_name = f"{dialog[0].title}"
+    if dialog[1]:
+        chat_name += f"|{dialog[1].title}"
+    return chat_name
+
 async def initialize_users() -> None:
     cur.execute("""
     SELECT * FROM app_user

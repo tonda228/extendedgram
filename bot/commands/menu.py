@@ -21,4 +21,4 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Where do you wish to continue?", reply_markup=InlineKeyboardMarkup(keyboard))
-    user_info[user_id].status = UserState.WAIT_FOR_MENU_CHOICE
+    # user_info[user_id].status = UserState.WAIT_FOR_MENU_CHOICE

@@ -13,7 +13,8 @@ from features.preloading import reset_idle_timer
 from features.search import search_request, process_search_chat, process_search_text, flip_search_chat_state
 
 from settings import settings
-from settings.allowed_dialogs import query_new_allowed_dialogs, display_allowed_dialogs, change_allowed_dialogs
+from settings.allowed_dialogs import query_new_allowed_dialogs, display_allowed_dialogs, change_allowed_dialogs, \
+    display_new_allowed_dialogs_options, flip_allowed_dialogs_options_state, flip_new_allowed_dialogs_state
 from settings.history_size import display_history_size, change_history_size, query_new_history_size
 from state import user_info
 from features.summarize import summarize_request, process_summarize_query
@@ -61,10 +62,25 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif app_user.status == UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION:
         if query.data == "Yes":
-            await query_new_allowed_dialogs(update, context)
+            await display_new_allowed_dialogs_options(update, context)
         else:
             await settings(update, context)
-        await query.delete_message()
+        # await query.delete_message()
+
+    elif app_user.status == UserState.WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE:
+        if query.data == "confirm":
+            if "choose" in user_info[update.effective_user.id].allowed_dialogs_options:
+                await query_new_allowed_dialogs(update, context)
+            else:
+                await change_allowed_dialogs(update, context, query.data)
+        else:
+            await flip_allowed_dialogs_options_state(update, context, query)
+
+    elif app_user.status == UserState.WAIT_FOR_ALLOWED_DIALOGS_MANUAL_CHOICE:
+        if query.data == "confirm":
+            await change_allowed_dialogs(update, context, "")
+        else:
+            await flip_new_allowed_dialogs_state(update, context, query)
 
     elif app_user.status == UserState.WAIT_FOR_LOG_OUT_CONFIRMATION:
         await query.delete_message()
@@ -114,13 +130,13 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await process_code(update, context, text)
     elif status == UserState.WAIT_FOR_PASSWORD:
         await process_password(update, context, text)
-    elif status == UserState.WAIT_FOR_SUMMARIZE_CHAT:
-        await process_summarize_query(update, context, text)
-    elif status == UserState.WAIT_FOR_SEARCH_CHAT:
-        await process_search_chat(update, context, text)
+    # elif status == UserState.WAIT_FOR_SUMMARIZE_CHAT:
+    #     await process_summarize_query(update, context, text)
+    # elif status == UserState.WAIT_FOR_SEARCH_CHAT:
+    #     await process_search_chat(update, context, text)
     elif status == UserState.WAIT_FOR_SEARCH_TEXT:
         await process_search_text(update, context, text)
-    elif status == UserState.WAIT_FOR_ALLOWED_DIALOGS_CHOICE:
-        await change_allowed_dialogs(update, context, text)
+    # elif status == UserState.WAIT_FOR_ALLOWED_DIALOGS_CHOICE:
+    #     await change_allowed_dialogs(update, context, text)
     elif status == UserState.WAIT_FOR_NEW_HISTORY_SIZE:
         await change_history_size(update, context, text)
