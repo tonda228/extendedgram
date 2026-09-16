@@ -4,7 +4,7 @@ from telethon.tl.custom import Dialog
 from telethon.tl.types import User, Channel, ForumTopic
 from telethon import functions, utils
 
-from state import user_info
+from utils.state import user_info
 from . import cur, connection
 
 def store_channel(channel):
@@ -34,7 +34,8 @@ def store_dialog(dialog, user_id, is_allowed=False):
         if dialog[0].username:
             dialog_title = dialog[0].username
         else:
-            dialog_title = dialog[0].first_name + (dialog[0].last_name if dialog[0].last_name else "")
+            first_name = (dialog[0].first_name if dialog[0].first_name else "")
+            dialog_title = first_name + (dialog[0].last_name if dialog[0].last_name else "")
     else:
         dialog_title = dialog[0].title
 
@@ -86,7 +87,7 @@ async def get_all_dialogs(user_id: int):
     app_user = user_info[user_id]
     dialogs = []
 
-    async for dialog in app_user.client.iter_dialogs(limit=50):
+    async for dialog in app_user.client.iter_dialogs():
         if dialog.is_group and getattr(dialog.entity, "forum", False):
             result = await app_user.client(
                 functions.messages.GetForumTopicsRequest(

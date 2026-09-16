@@ -17,6 +17,7 @@ class UserState(IntEnum):
     WAIT_FOR_SETTINGS_CHOICE = auto()
     WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION = auto()
     WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE = auto()
+    WAIT_FOR_ALLOWED_DIALOGS_CATEGORY_CHOICE = auto()
     WAIT_FOR_ALLOWED_DIALOGS_MANUAL_CHOICE = auto()
     WAIT_FOR_HISTORY_SIZE_CHANGE_CONFIRMATION = auto()
     WAIT_FOR_NEW_HISTORY_SIZE = auto()
@@ -37,6 +38,11 @@ class AppUser:
         self.chosen_ids = None
         self.allowed_dialogs_options = None
         self.last_read = None
+        self.allowed_dialogs = None
+        self.cur_page = 0
+        self.last_category = None
+        self.category_dialogs_count = None
+        self.allowed_dialogs_set = None
 
         self._init_info = InitializationInfo() if self._status < UserState.AUTHENTICATED else None
         self.preloading = False if not app_user else app_user.preloading

@@ -4,7 +4,7 @@ from telethon.tl.functions.messages import GetForumTopicsRequest
 
 from database.dialogs import store_dialog
 from database.messages import store_message, delete_public_message, delete_private_message
-from state import user_info
+from utils.state import user_info
 from telethon.tl.types import User, Channel, ForumTopic, UpdateDeleteMessages, UpdateDeleteChannelMessages
 
 async def get_topic(channel: Dialog, message: Message, client: TelegramClient) -> ForumTopic | None:

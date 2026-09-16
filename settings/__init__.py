@@ -1,9 +1,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from classes import UserState
-from state import user_info
-from utils import check_authentication, reset_idle_timer
+from utils.classes import UserState
+from features.preloading import reset_idle_timer
+from utils.state import user_info
+from utils.check_authentication import check_authentication
+
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_authentication(update, context):

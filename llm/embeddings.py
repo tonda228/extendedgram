@@ -1,21 +1,25 @@
-import httpx
+import os
+
+from dotenv import load_dotenv
 from pgvector import Vector
 from telethon.tl.custom import Message, Dialog
-from telethon.tl.types import User, Channel, ForumTopic
+from telethon.tl.types import Channel, ForumTopic
 
 from database import cur, connection
-from llm import EMBEDDING_MODEL, requests_client, EMBEDDING_URL
+from llm import requests_client
 
+load_dotenv()
 
 async def create_embedding(text: str) -> Vector:
     headers = {
         "Content-Type": "application/json"
     }
     payload = {
-        "model": EMBEDDING_MODEL,
+        "model": os.environ["EMBEDDING_MODEL"],
         "input": text
     }
-    response = await requests_client.post(EMBEDDING_URL, headers=headers, json=payload)
+    # change to openai api
+    response = await requests_client.post(os.environ["EMBEDDING_LOCAL_URL"], headers=headers, json=payload)
     return Vector(response.json()["data"][0]["embedding"])
 
 async def create_message_embedding(dialog: tuple[Dialog, ForumTopic], message: Message, user_id: int, media_description: str | None, update: bool = False) -> Vector:

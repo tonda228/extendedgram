@@ -6,13 +6,15 @@ from telethon import functions
 from telethon.tl.types import User, Channel
 
 from bot.commands.menu import menu
-from classes import UserState
+from utils.classes import UserState
 from database.dialogs import get_allowed_dialogs, get_unread_count
 from database.messages import store_unsaved_messages, get_public_messages_for_summarization, \
     get_private_messages_for_summarization
-from state import user_info
-from utils import check_authentication, reset_idle_timer, get_message_info
+from features.preloading import reset_idle_timer
+from utils.state import user_info
 from llm import requests_client, URL
+from utils.check_authentication import check_authentication
+from utils.helpers import get_message_info
 
 
 async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,13 +93,13 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
 
     reset_idle_timer(user_id)
 
-    if isinstance(chosen_dialog[0], Channel):
+    if isinstance(chosen_dialog[0].entity, Channel):
         messages = get_public_messages_for_summarization(chosen_dialog, messages_count)
     else:
         messages = get_private_messages_for_summarization(chosen_dialog, user_id, messages_count)
 
     for message in messages:
-        await get_message_info(data, message)
+        get_message_info(data, message)
 
     response_format = ("["
                        "     {"

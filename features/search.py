@@ -3,14 +3,15 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telethon.tl.types import User, Channel
 
-from classes import UserState
+from utils.classes import UserState
+from features.preloading import reset_idle_timer
 from llm import requests_client, URL
 from database.dialogs import get_allowed_dialogs, update_dialog_priorities, delete_old_dialog_priorities
 from database.messages import store_unsaved_messages, get_best_public_messages, get_best_private_messages
 from bot.commands.menu import menu
 from llm.embeddings import create_embedding
-from state import user_info
-from utils import check_authentication, reset_idle_timer, get_message_info, update_inline_keyboard
+from utils.state import user_info
+from utils.check_authentication import check_authentication
 
 
 async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -23,6 +24,12 @@ async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     reset_idle_timer(user_id)
 
     dialogs = await get_allowed_dialogs(user_id)
+
+    if len(dialogs) == 0:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text="There are no dialogs or none are allowed.")
+        await menu(update, context)
+        return
 
     keyboard = []
     for index, dialog in enumerate(dialogs):
@@ -92,7 +99,7 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     data = []
     for message in best_messages:
-        await get_message_info(data, message)
+        get_message_info(data, message)
 
     request_data = {
         "model": "docker.io/ai/qwen3-vl:8B",
@@ -110,5 +117,7 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     response = await requests_client.post(URL, json=request_data)
     result = response.json()["choices"][0]["message"]["content"]
     await context.bot.send_message(chat_id=update.effective_chat.id, text=result, parse_mode="Markdown")
+
+    user_info[user_id].chosen_ids = None
 
     await menu(update, context)

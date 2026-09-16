@@ -1,26 +1,33 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError, PasswordHashInvalidError
-from classes import UserState, AppUserPreloading
+from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError, PasswordHashInvalidError, \
+    PhoneCodeExpiredError
+
+from bot.commands.menu import menu
+from utils.classes import UserState, AppUserPreloading
 from database import connection, cur
-from state import user_info, user_preloading
-from utils import reset_idle_timer
+from features.preloading import reset_idle_timer
+from utils.state import user_info, user_preloading
 
 
 def validate_phone_number(number: str) -> bool:
     number = "".join(number.split())
-    if len(number) != 13 or number[0] != '+' or not number[1:].isdigit():
-        return False
-    return True
+    return (
+            number.startswith("+")
+            and number[1:].isdigit()
+            and 8 <= len(number) <= 16
+    )
 
 async def process_phone_number(update: Update, context, number):
-    if not validate_phone_number(number):
-        raise ValueError
-
     user_id = update.effective_user.id
     user_info[user_id].phone_num = number
 
     client = user_info[user_id].client
+
+    if not validate_phone_number(number):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid phone number try again.")
+        return
+
     await client.connect()
     result = await client.send_code_request(number)
     user_info[user_id].phone_code_hash = result.phone_code_hash
@@ -52,11 +59,16 @@ async def process_code(update: Update, context: ContextTypes.DEFAULT_TYPE, code:
         text = f"Could not login.\nYou have {app_user.tries_left} left"
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
         if app_user.tries_left == 0:
-            client.disconnect()
+            await client.disconnect()
     except SessionPasswordNeededError as e:
         print(e)
-        app_user.tries_left = UserState.WAIT_FOR_PASSWORD
+        app_user.status = UserState.WAIT_FOR_PASSWORD
         text = "Two-steps verification is enabled and a password is required:"
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    except PhoneCodeExpiredError as e:
+        text = "You might have forgot to separate your code with whitespaces. Try again with new code."
+        result = await client.send_code_request(number)
+        user_info[user_id].phone_code_hash = result.phone_code_hash
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
     else:
         await successful_login(update, context)
@@ -93,6 +105,8 @@ async def successful_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_info[user_id].status = UserState.AUTHENTICATED
     user_preloading[user_id] = AppUserPreloading()
     reset_idle_timer(user_id)
+
+    await menu(update, context)
 
 # async def process_qr_code(update: Update, context):
 #     user_id = update.effective_user.id

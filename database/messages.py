@@ -1,14 +1,15 @@
 import os
 import datetime as dt
+import shutil
 
 from pgvector import Vector
 from telethon import TelegramClient
 from telethon.tl.custom import Message, Dialog
-from telethon.tl.types import User, Channel, ForumTopic
+from telethon.tl.types import User, Channel, ForumTopic, MessageActionChatJoinedByLink
 
 from llm.completions import translate_image
 from llm.embeddings import create_message_embedding
-from state import user_info
+from utils.state import user_info
 from . import cur, connection
 from .dialogs import store_dialog, get_unread_count
 from .users import store_telegram_user
@@ -37,9 +38,10 @@ async def store_message(message: Message, dialog: tuple[Dialog, ForumTopic | Non
 
     is_channel = isinstance(dialog[0], Channel) or (isinstance(dialog[0], Dialog) and isinstance(dialog[0].entity, Channel))
     if is_channel:
-        store_public_message(message, dialog[0].id, topic_id, sender_id, media_description, embedding)
+        channel_id = dialog[0].entity.id if isinstance(dialog[0], Dialog) else dialog[0].id
+        await store_public_message(message, channel_id, topic_id, user_id, sender_id, media_description, embedding)
     else:
-        store_private_message(message, dialog[0].id, user_id, sender_id, media_description, embedding)
+        await store_private_message(message, dialog[0].id, user_id, sender_id, media_description, embedding)
 
     connection.commit()
 
@@ -61,7 +63,20 @@ def delete_public_message(channel_id: int, message_id: int):
     """, (channel_id, message_id))
     connection.commit()
 
-def store_private_message(message: Message, dialog_id: int, user_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
+async def store_private_message(message: Message, dialog_id: int, user_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
+    if isinstance(message.action, MessageActionChatJoinedByLink):
+        client = user_info[user_id].client
+        user = await client.get_entity(message.from_id)
+
+        if user.username:
+            sender_name = user.username
+        else:
+            sender_name = user.first_name + (user.last_name if user.last_name else "")
+        store_telegram_user(user.id, sender_name)
+
+        text = f"{sender_name} joined via an invite link."
+    else:
+        text = message.text
     cur.execute("""
     INSERT INTO private_message (
         message_id,
@@ -74,9 +89,23 @@ def store_private_message(message: Message, dialog_id: int, user_id: int, sender
         embedding
     ) VALUES (%s, %s, %s, %s, %s, %s, %s,%s)
         ON CONFLICT DO NOTHING
-    """, (message.id, dialog_id, user_id, sender_id, message.date, message.text, media_description, embedding))
+    """, (message.id, dialog_id, user_id, sender_id, message.date, text, media_description, embedding))
 
-def store_public_message(message: Message, dialog_id: int, topic_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
+async def store_public_message(message: Message, channel_id: int, topic_id: int, user_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
+    if isinstance(message.action, MessageActionChatJoinedByLink):
+        client = user_info[user_id].client
+        user = await client.get_entity(message.from_id)
+
+        if user.username:
+            sender_name = user.username
+        else:
+            sender_name = user.first_name + (user.last_name if user.last_name else "")
+        store_telegram_user(user.id, sender_name)
+
+        text = f"{sender_name} joined via an invite link."
+    else:
+        text = message.text
+
     cur.execute("""
     INSERT INTO public_message (
         message_id,
@@ -89,9 +118,10 @@ def store_public_message(message: Message, dialog_id: int, topic_id: int, sender
         embedding
     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT DO NOTHING
-    """, (message.id, dialog_id, topic_id, sender_id, message.date, message.text, media_description, embedding))
+    """, (message.id, channel_id, topic_id, sender_id, message.date, text, media_description, embedding))
 
 def get_public_messages(dialog: tuple[Dialog, ForumTopic | None]):
+    dialog_id = dialog[0].entity.id if isinstance(dialog[0], Dialog) else dialog[0].id
     topic_id = dialog[1].id if dialog[1] else 0
     cur.execute("""
                 SELECT *
@@ -99,7 +129,7 @@ def get_public_messages(dialog: tuple[Dialog, ForumTopic | None]):
                 WHERE channel_id = %s
                   AND topic_id = %s
                 ORDER BY message_id desc
-                """, (dialog[0].id, topic_id))
+                """, (dialog_id, topic_id))
     return cur.fetchall()
 
 def get_private_messages(dialog: tuple[Dialog, ForumTopic | None], user_id: int):
@@ -125,7 +155,7 @@ def get_best_public_messages(dialog: tuple[Dialog, ForumTopic | None], embedding
       and topic_id = %s
     ORDER BY embedding <=> %s
     LIMIT 10
-    """, (dialog[0].id, topic_id, embedding))
+    """, (dialog[0].entity.id, topic_id, embedding))
     return cur.fetchall()
 
 def get_best_private_messages(user_id: int, dialog: tuple[Dialog, ForumTopic | None], embedding: Vector):
@@ -151,15 +181,16 @@ def get_public_messages_for_summarization(channel: tuple[Dialog, ForumTopic | No
     from (select pm.*, user_name, title
         from public_message pm
         join dialog d
-            on d.dialog_id = pm.channel_id
+            on d.channel_id = pm.channel_id
         left join telegram_user tu
             on pm.sender_id = tu.user_id
-        where channel_id = %s
-           and topic_id = %s
+        where pm.channel_id = %s
+           and pm.topic_id = %s
         order by message_id desc
         limit %s)
     order by message_id asc
-    """, (channel[0].id, topic_id, messages_count))
+    """, (channel[0].entity.id, topic_id, messages_count))
+
     return cur.fetchall()
 
 def get_private_messages_for_summarization(dialog: tuple[Dialog, None], user_id: int, messages_count: int):

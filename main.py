@@ -8,12 +8,14 @@ from bot.commands.logout import log_out_request
 from bot.commands.menu import menu
 from features.search import search_request
 from features.summarize import summarize_request
-import infinite_task
 from settings import settings
-from utils import initialize_users
+from utils import infinite_task
+from utils.initialize_users import initialize_users
 
-# add more options when choosing allowed dialogs
+
 # handle errors telegram.error.BadRequest
+# add pagers for summarize and search
+# add openai interface for all llm requests
 
 async def main():
     await initialize_users()

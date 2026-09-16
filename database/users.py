@@ -1,4 +1,4 @@
-from state import user_info
+from utils.state import user_info
 from . import cur, connection
 
 

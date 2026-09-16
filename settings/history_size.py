@@ -1,10 +1,10 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from classes import UserState
+from utils.classes import UserState
 from database import cur, connection
 from settings import settings
-from state import user_info
+from utils.state import user_info
 
 
 async def display_history_size(update: Update, context: ContextTypes.DEFAULT_TYPE):

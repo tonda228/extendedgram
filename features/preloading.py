@@ -2,7 +2,7 @@ import asyncio
 
 from database.dialogs import get_recent_dialogs
 from database.messages import store_unsaved_messages
-from state import user_preloading, user_info
+from utils.state import user_preloading, user_info
 
 SLEEP_TIME = 60
 

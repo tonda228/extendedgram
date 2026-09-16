@@ -1,10 +1,10 @@
 from telegram import InlineKeyboardButton, Update, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from classes import UserState
 from database import connection, cur
 from database.dialogs import delete_unused_channels
-from state import user_info
+from utils.classes import UserState
+from utils.state import user_info
 
 
 async def log_out_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,7 +31,7 @@ async def log_out_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
     cur.execute("""
     --delete telegram_users that don't have messages
     DELETE 
-    FROM telegram_users as tu
+    FROM telegram_user as tu
     WHERE NOT EXISTS (
         SELECT 1
         FROM app_user au
@@ -49,5 +49,6 @@ async def log_out_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
     connection.commit()
 
     if update.effective_user.id in user_info:
+        await user_info[update.effective_user.id].client.disconnect()
         del user_info[update.effective_user.id]
     await context.bot.send_message(chat_id=update.effective_chat.id, text="You've successfully logged out.")

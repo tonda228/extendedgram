@@ -2,13 +2,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Keyboar
 from telegram.ext import ContextTypes
 from telethon.tl.types import User, Chat, Channel
 
-from classes import UserState
+from utils.classes import UserState
 from database import cur, connection
 from database.dialogs import get_allowed_dialogs, get_all_dialogs, store_dialog
+from features.preloading import reset_idle_timer
 from settings import settings
-from state import user_info
-from utils import reset_idle_timer, update_inline_keyboard, get_full_chat_name
+from utils.state import user_info
+from utils.helpers import get_full_chat_name
 
+PAGE_SIZE = 6
 
 # I can save allowed dialogs in runtime memory
 # find a way to check if dialog was added and update allow_all
@@ -95,7 +97,7 @@ async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAUL
         if save_chats and isinstance(dialog[0].entity, Chat):
             continue
         if save_users and isinstance(dialog[0].entity, User) and not dialog[0].entity.bot:
-           continue
+            continue
         if save_bots and isinstance(dialog[0].entity, User) and dialog[0].entity.bot:
             continue
         dialog_name = dialog[0].title
@@ -117,7 +119,6 @@ async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAUL
     app_user.dialogs = given_dialogs
     user_info[update.effective_user.id].chosen_ids = set()
 
-# add some states maybe
 
 async def flip_new_allowed_dialogs_state(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
     keyboard = query.message.reply_markup.inline_keyboard
@@ -176,6 +177,5 @@ async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_T
         WHERE user_id = %s
         """, (user_id,))
 
-    # delete dialogs that became restricted?
     connection.commit()
     await settings(update, context)
