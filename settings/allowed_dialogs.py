@@ -12,12 +12,7 @@ from utils.helpers import get_full_chat_name
 
 PAGE_SIZE = 6
 
-# I can save allowed dialogs in runtime memory
-# find a way to check if dialog was added and update allow_all
-# add one more layer for choosing
-# also don't always jump straight to menu after /back
-
-async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
     user_id = update.effective_user.id
     reset_idle_timer(user_id)
 
@@ -45,43 +40,52 @@ async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_
             InlineKeyboardButton(text="No", callback_data="No")
         ]
     ]
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Do you wish to change your choice?", reply_markup=InlineKeyboardMarkup(keyboard))
+    await context.bot.send_message(chat_id=update.effective_chat.id,
+                                        text="Do you wish to change your choice?",
+                                        reply_markup=InlineKeyboardMarkup(keyboard))
     user_info[user_id].status = UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION
 
-async def display_new_allowed_dialogs_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def display_new_allowed_dialogs_options(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
+    user_id = update.effective_user.id
+    app_user = user_info[user_id]
+    options = app_user.allowed_dialogs_options if app_user.allowed_dialogs_options is not None else set()
     keyboard = [
-        [InlineKeyboardButton(text="Allow channels: ❌", callback_data="channels")],
-        [InlineKeyboardButton(text="Allow chats/groups: ❌", callback_data="chats")],
-        [InlineKeyboardButton(text="Allow user chats: ❌", callback_data="users")],
-        [InlineKeyboardButton(text="Allow bots: ❌", callback_data="bots")],
-        [InlineKeyboardButton(text="Choose manually: ❌", callback_data="choose")],
+        [InlineKeyboardButton(text="Allow all channels: " + ("✅" if "channels" in options else "❌"), callback_data="channels")],
+        [InlineKeyboardButton(text="Allow all chats/groups: " + ("✅" if "chats" in options else "❌"), callback_data="chats")],
+        [InlineKeyboardButton(text="Allow all user chats: " + ("✅" if  "users" in options else "❌"), callback_data="users")],
+        [InlineKeyboardButton(text="Allow all bots: " + ("✅" if "bots" in options else "❌"), callback_data="bots")],
+        [InlineKeyboardButton(text="Choose the rest manually: " + ("✅" if "choose" in options else "❌"), callback_data="choose")],
         [InlineKeyboardButton(text="Confirm", callback_data="confirm")]
     ]
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text="Choose which dialogs you want to allow.\n"
-                                        "Note: if you select any of the groups (e.g 'Allow channels') and "
-                                        "'Choose manually, you will choose dialogs that doesnt belong to any "
-                                        "of selected groups.",
-                                   reply_markup=InlineKeyboardMarkup(keyboard))
-    user_info[update.effective_user.id].status = UserState.WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE
-    user_info[update.effective_user.id].allowed_dialogs_options = set()
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id,
+                                        message_id=query.message.message_id,
+                                        text="Choose which dialogs you want to allow.\n"
+                                             "Note: Previously manually allowed dialogs will stay that way if you don't unchoose them.\n",
+                                        reply_markup=InlineKeyboardMarkup(keyboard))
+    app_user.status = UserState.WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE
+    app_user.allowed_dialogs_options = set() if app_user.allowed_dialogs_options is None else app_user.allowed_dialogs_options
+    app_user.chosen_ids = None
 
-async def flip_allowed_dialogs_options_state(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
-    keyboard = query.message.reply_markup.inline_keyboard
-    new_markup = update_inline_keyboard(keyboard, query.data, user_id=update.effective_user.id, save_to="allowed_dialogs_options")
-
-    await context.bot.edit_message_reply_markup(chat_id=update.effective_chat.id,
-                                                message_id=query.message.message_id,
-                                                reply_markup=new_markup)
-
-async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def query_new_allowed_dialogs_categories(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
     user_id = update.effective_user.id
     app_user = user_info[user_id]
     all_dialogs = await get_all_dialogs(user_id)
+    allowed_dialogs_set = app_user.allowed_dialogs_set if app_user.allowed_dialogs_set is not None else set()
+    if {"choose", "channels", "chats", "users", "bots"}.issubset(app_user.allowed_dialogs_options):
+        await change_allowed_dialogs(update, context)
+        return
+
+    initial_time = False
+    if app_user.chosen_ids == None:
+        initial_time = True
+        app_user.chosen_ids = set()
+    ids = app_user.chosen_ids
 
     reset_idle_timer(user_id)
 
-    keyboard = []
+    if "choose" not in app_user.allowed_dialogs_options:
+        await change_allowed_dialogs(update, context)
+        return
 
     given_dialogs = []
 
@@ -100,43 +104,102 @@ async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAUL
             continue
         if save_bots and isinstance(dialog[0].entity, User) and dialog[0].entity.bot:
             continue
-        dialog_name = dialog[0].title
-        if dialog[1]:
-            dialog_name += f"|{dialog[1].title}"
-        dialog_text = dialog_name + ": ❌"
-        keyboard.append([InlineKeyboardButton(text=dialog_text, callback_data=str(index))])
+        if initial_time and dialog[0].id in allowed_dialogs_set:
+            ids.add(str(index))
         given_dialogs.append(dialog)
         index += 1
 
-    keyboard.append([InlineKeyboardButton(text="Confirm my choice", callback_data="confirm")])
-    keyboard.append([InlineKeyboardButton(text="Back", callback_data="back")])
-    markup = InlineKeyboardMarkup(keyboard)
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text="Choose which dialogs you want to allow.",
-                                   reply_markup=markup)
+    keyboard = []
+    if not save_channels:
+        keyboard.append([InlineKeyboardButton(text="Choose channels", callback_data="channels")])
+    if not save_chats:
+        keyboard.append([InlineKeyboardButton(text="Choose chats/groups", callback_data="chats")])
+    if not save_users:
+        keyboard.append([InlineKeyboardButton(text="Choose user chats", callback_data="users")])
+    if not save_bots:
+        keyboard.append([InlineKeyboardButton(text="Choose bots", callback_data="bots")])
 
-    app_user.status = UserState.WAIT_FOR_ALLOWED_DIALOGS_MANUAL_CHOICE
+    keyboard += [[InlineKeyboardButton(text="Confirm", callback_data="confirm")],
+                [InlineKeyboardButton(text="Back", callback_data="back")]]
+
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id,
+                                        message_id=query.message.message_id,
+                                        text="From which categories you want to select?",
+                                        reply_markup=InlineKeyboardMarkup(keyboard))
+
+    app_user.status = UserState.WAIT_FOR_ALLOWED_DIALOGS_CATEGORY_CHOICE
     app_user.dialogs = given_dialogs
-    user_info[update.effective_user.id].chosen_ids = set()
+    app_user.chosen_ids = ids
+    app_user.allowed_dialogs_set = allowed_dialogs_set
+    app_user.cur_page = 0
 
 
-async def flip_new_allowed_dialogs_state(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
-    keyboard = query.message.reply_markup.inline_keyboard
-    new_markup = update_inline_keyboard(keyboard, query.data, user_id=update.effective_user.id, save_to="chosen_ids")
+async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
+    user_id = update.effective_user.id
+    app_user = user_info[user_id]
 
-    await context.bot.edit_message_reply_markup(chat_id=update.effective_chat.id,
-                                                message_id=query.message.message_id,
-                                                reply_markup=new_markup)
+    all_dialogs = app_user.dialogs
+    category = query.data if query.data not in ["prev", "next"] else app_user.last_category
 
-async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE, text):
+    if app_user.chosen_ids is None:
+        app_user.chosen_ids = set()
+    ids = app_user.chosen_ids
+    cur_page = app_user.cur_page
+    start = cur_page * PAGE_SIZE
+    end = start + PAGE_SIZE
+
+    keyboard = []
+    dialog_id = 0
+    for index, dialog in enumerate(all_dialogs):
+        if category == "channels" and not isinstance(dialog[0].entity, Channel):
+            continue
+        if category == "chats" and not isinstance(dialog[0].entity, Chat):
+            continue
+        if category == "users" and not (isinstance(dialog[0].entity, User) and not dialog[0].entity.bot):
+            continue
+        if category == "bots" and not (isinstance(dialog[0].entity, User) and dialog[0].entity.bot):
+            continue
+
+        if isinstance(dialog[0].entity, User) and dialog[0].entity.deleted:
+            continue
+        if isinstance(dialog[0].entity, Chat) and (dialog[0].entity.left or dialog[0].entity.deactivated):
+            continue
+        if isinstance(dialog[0].entity, Channel) and (dialog[0].entity.left or dialog[0].entity.restricted):
+            continue
+
+        if not start <= dialog_id < end:
+            dialog_id += 1
+            continue
+
+        dialog_name = dialog[0].title
+        if dialog[1]:
+            dialog_name += f"|{dialog[1].title}"
+
+        dialog_text = dialog_name + ": " + ("✅" if str(index) in ids else "❌")
+        keyboard.append([InlineKeyboardButton(text=dialog_text, callback_data=str(index))])
+        dialog_id += 1
+
+
+    if dialog_id > PAGE_SIZE:
+        keyboard += [[InlineKeyboardButton(text="◀ Prev", callback_data="prev"),
+                      InlineKeyboardButton(text="Next ▶️", callback_data="next")]]
+    keyboard += [[InlineKeyboardButton(text="Confirm", callback_data="confirm")]]
+
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id,
+                                        message_id=query.message.message_id,
+                                        text="Choose which dialogs you want to allow.",
+                                        reply_markup=InlineKeyboardMarkup(keyboard))
+    app_user.status = UserState.WAIT_FOR_ALLOWED_DIALOGS_MANUAL_CHOICE
+    app_user.last_category = category
+    app_user.category_dialogs_count = dialog_id
+
+async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     app_user = user_info[user_id]
     given_dialogs = app_user.dialogs or []
     all_dialogs = await get_all_dialogs(user_id)
     options = app_user.allowed_dialogs_options
-    ids = {int(index) for index in app_user.chosen_ids} if  app_user.chosen_ids else set()
-
-    # finish this
+    ids = {int(index) for index in app_user.chosen_ids} if app_user.chosen_ids is not None else set()
 
     reset_idle_timer(user_id)
 
@@ -146,29 +209,48 @@ async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_T
     save_bots = "bots" in options
     manually = "choose" in options
 
+    new_allowed_dialogs = []
+
+    # refactor this
     for dialog in all_dialogs:
         if save_channels and isinstance(dialog[0].entity, Channel):
             store_dialog(dialog, user_id, True)
+            new_allowed_dialogs.append(dialog)
+            app_user.allowed_dialogs_set.add(dialog[0].id)
         elif save_chats and isinstance(dialog[0].entity, Chat):
             store_dialog(dialog, user_id, True)
+            new_allowed_dialogs.append(dialog)
+            app_user.allowed_dialogs_set.add(dialog[0].id)
         elif save_users and isinstance(dialog[0].entity, User) and not dialog[0].entity.bot:
             store_dialog(dialog, user_id, True)
+            new_allowed_dialogs.append(dialog)
+            app_user.allowed_dialogs_set.add(dialog[0].id)
         elif save_bots and isinstance(dialog[0].entity, User) and dialog[0].entity.bot:
             store_dialog(dialog, user_id, True)
+            new_allowed_dialogs.append(dialog)
+            app_user.allowed_dialogs_set.add(dialog[0].id)
         elif not manually:
             app_user.allow_all = False
             store_dialog(dialog, user_id, False)
+            app_user.allowed_dialogs_set.discard(dialog[0].id)
 
 
-
-    for index, dialog in enumerate(given_dialogs):
-        if index in ids:
-            store_dialog(dialog, user_id, True)
-        else:
-            app_user.allow_all = False
-            store_dialog(dialog, user_id, False)
+    if manually:
+        for index, dialog in enumerate(given_dialogs):
+            if index in ids:
+                store_dialog(dialog, user_id, True)
+                new_allowed_dialogs.append(dialog)
+                app_user.allowed_dialogs_set.add(dialog[0].id)
+            else:
+                app_user.allow_all = False
+                store_dialog(dialog, user_id, False)
+                app_user.allowed_dialogs_set.discard(dialog[0].id)
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Changes have been saved.")
+
+    app_user.allowed_dialogs = new_allowed_dialogs
+    app_user.allowed_dialogs_options = None
+    app_user.chosen_ids = None
 
     if not app_user.allow_all:
         cur.execute("""

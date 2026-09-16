@@ -12,7 +12,6 @@ from settings import settings
 from utils import infinite_task
 from utils.initialize_users import initialize_users
 
-
 # handle errors telegram.error.BadRequest
 # add pagers for summarize and search
 # add openai interface for all llm requests

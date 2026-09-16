@@ -136,8 +136,12 @@ def delete_old_dialog_priorities(user_id):
 
 async def get_allowed_dialogs(user_id: int):
     app_user = user_info[user_id]
+    if not app_user.allow_all and app_user.allowed_dialogs is not None:
+        return app_user.allowed_dialogs
+
     all_dialogs = await get_all_dialogs(user_id)
     if app_user.allow_all:
+        app_user.allowed_dialogs_set = set()
         return all_dialogs
 
     cur.execute("""
@@ -157,6 +161,8 @@ async def get_allowed_dialogs(user_id: int):
         if utils.get_peer_id(dialog[0].entity) not in allowed_dialogs_set:
             continue
         allowed_dialogs.append(dialog)
+    app_user.allowed_dialogs = allowed_dialogs
+    app_user.allowed_dialogs_set = allowed_dialogs_set
     return allowed_dialogs
 
 def get_unread_count(dialog):

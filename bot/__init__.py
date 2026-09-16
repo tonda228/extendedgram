@@ -44,11 +44,14 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await search_request(update, context)
     elif query.data == "settings":
         await settings(update, context)
-    elif query.data == "back":
-        await menu(update, context)
 
+    # summarize
     elif app_user.status == UserState.WAIT_FOR_SUMMARIZE_CHAT:
-        await process_summarize_query(update, context, query)
+        if query.data == "back":
+            await query.delete_message()
+            app_user.status = UserState.AUTHENTICATED
+        else:
+            await process_summarize_query(update, context, query)
 
     elif app_user.status == UserState.WAIT_FOR_READ:
         if query.data == "Yes":
@@ -56,6 +59,7 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.delete_message()
         await menu(update, context)
 
+    # search
     elif app_user.status == UserState.WAIT_FOR_SEARCH_CHAT:
         if query.data == "confirm":
             await process_search_chat(update, context)
