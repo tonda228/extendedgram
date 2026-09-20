@@ -5,8 +5,7 @@ import os
 from telethon.tl.custom import Message
 from telethon.tl.types import User, Channel
 
-from llm import COMPLETIONS_MODEL, completions_client
-
+from llm import llm_client
 
 def image_to_data_url(path: str | os.PathLike) -> str:
     mime_type, _ = mimetypes.guess_file_type(path)
@@ -31,8 +30,8 @@ async def translate_image(message: Message):
             }
         ]
     }
-    response = await completions_client.chat.completions.create(
-        model=COMPLETIONS_MODEL,
+    response = await llm_client.chat.completions.create(
+        model=os.environ["COMPLETIONS_MODEL"],
         messages=[request_data])
     media_description = response.choices[0].message.content
     os.remove(media)

@@ -1,11 +1,13 @@
-from pgvector import Vector
+import os
+
+import telegram
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telethon.tl.types import User, Channel
 
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
-from llm import requests_client, URL
+from llm import llm_client, URL
 from database.dialogs import get_allowed_dialogs, update_dialog_priorities, delete_old_dialog_priorities
 from database.messages import store_unsaved_messages, get_best_public_messages, get_best_private_messages
 from bot.commands.menu import menu
@@ -101,21 +103,25 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     for message in best_messages:
         get_message_info(data, message)
 
-    request_data = {
-        "model": "docker.io/ai/qwen3-vl:8B",
-        "messages": [
-            {
-                "role": "system",
-                "content": "Give short answer on the following question: " + text
-            },
-            {
-                "role": "user",
-                "content": data
-            }
-        ]
-    }
-    response = await requests_client.post(URL, json=request_data)
-    result = response.json()["choices"][0]["message"]["content"]
+    request_data = [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Give short answer on the following question: " + text
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": data
+        }
+    ]
+    response = await llm_client.chat.completions.create(
+        model=os.environ["COMPLETIONS_MODEL"],
+        messages=request_data)
+    result = response.choices[0].message.content
     await context.bot.send_message(chat_id=update.effective_chat.id, text=result, parse_mode="Markdown")
 
     user_info[user_id].chosen_ids = None

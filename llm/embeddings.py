@@ -6,21 +6,13 @@ from telethon.tl.custom import Message, Dialog
 from telethon.tl.types import Channel, ForumTopic
 
 from database import cur, connection
-from llm import requests_client
+from llm import llm_client
 
 load_dotenv()
 
 async def create_embedding(text: str) -> Vector:
-    headers = {
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": os.environ["EMBEDDING_MODEL"],
-        "input": text
-    }
-    # change to openai api
-    response = await requests_client.post(os.environ["EMBEDDING_LOCAL_URL"], headers=headers, json=payload)
-    return Vector(response.json()["data"][0]["embedding"])
+    response = await llm_client.embeddings.create(model=os.environ["EMBEDDING_MODEL"], input=text)
+    return Vector(response.data[0].embedding)
 
 async def create_message_embedding(dialog: tuple[Dialog, ForumTopic], message: Message, user_id: int, media_description: str | None, update: bool = False) -> Vector:
     text = "Text: " + ("None" if message.text is None else message.text)

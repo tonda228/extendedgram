@@ -1,5 +1,8 @@
+import html
 import json
+import os
 
+import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telethon import functions
@@ -12,7 +15,7 @@ from database.messages import store_unsaved_messages, get_public_messages_for_su
     get_private_messages_for_summarization
 from features.preloading import reset_idle_timer
 from utils.state import user_info
-from llm import requests_client, URL
+from llm import llm_client
 from utils.check_authentication import check_authentication
 from utils.helpers import get_message_info
 
@@ -101,20 +104,23 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
     for message in messages:
         get_message_info(data, message)
 
-    response_format = ("["
-                       "     {"
-                       "         start_message_id: ...,"
-                       "         end_message_id: ...,"
-                       "         topic: ...,"
-                       "         summary: ..."
-                       "     }"    
-                       "]")
-    request_data = {
-        "model": "docker.io/ai/qwen3-vl:8B",
-        "messages": [
-            {
-                "role": "system",
-                "content":  "Summarize the messages very concisely. "
+    response_format = """
+    [
+        {
+            "start_message_id": 123,
+            "end_message_id": 456,
+            "topic": "...",
+            "summary": "..."
+        }
+    ]
+    """
+    request_data = [
+        {
+            "role": "system",
+            "content":  [
+                {
+                    "type": "text",
+                    "text": "Summarize the messages very concisely. "
                             "For each message, you first receive the sender name and then the message. "
                             "Group related messages into topics, but do not merge unrelated conversations. "
                             "For each topic, include the first and last message IDs. "
@@ -129,18 +135,21 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
                             "If the conversation is short or contains little important information, return fewer topics rather than adding detail. "
                             "Add information about who says what if that person talks about his situation "
                             f"Response give in json in following format:\n {response_format}"
-
-            },
-            {
-                "role": "user",
-                "content": data
-            }
-        ]
-    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": data
+        }
+    ]
     while True:
         try:
-            response = await requests_client.post(URL, json=request_data)
-            results = json.loads(response.json()["choices"][0]["message"]["content"])
+            response = await llm_client.chat.completions.create(
+                model=os.environ["COMPLETIONS_MODEL"],
+                messages=request_data)
+            results = json.loads(response.choices[0].message.content)
+            # results = json.loads(response.json()["choices"][0]["message"]["content"])
         except json.decoder.JSONDecodeError:
             await context.bot.send_message(chat_id=update.effective_chat.id, text="Error occurred. Retrying...")
         else:
@@ -160,8 +169,10 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
             link_start = f"<a href='{url_start.link}'>here</a>"
             link_end = f"<a href='{url_end.link}'>here</a>"
             messages = f"From {link_start} to {link_end}\n"
-        await query.message.reply_html(text=f"{index}) {result["topic"]}\n"
-                                             f"{messages}{result["summary"]}",
+        topic = html.escape(str(result["topic"]))
+        summary = html.escape(str(result["summary"]))
+        await query.message.reply_html(text=f"{index}) {topic}\n"
+                                             f"{messages}{summary}",
                                         disable_web_page_preview=True)
 
 
