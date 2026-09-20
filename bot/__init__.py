@@ -1,4 +1,3 @@
-import math
 import os
 
 from telegram import Update
@@ -17,6 +16,7 @@ from settings import settings
 from settings.allowed_dialogs import display_allowed_dialogs, change_allowed_dialogs, \
     display_new_allowed_dialogs_options, query_new_allowed_dialogs_categories, query_new_allowed_dialogs, PAGE_SIZE
 from settings.history_size import display_history_size, change_history_size, query_new_history_size
+from utils.helpers import next_page, prev_page
 from utils.state import user_info
 from features.summarize import summarize_request, process_summarize_query
 from utils.check_authentication import check_authentication
@@ -39,8 +39,13 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
 
     if query.data == "summarize":
+        app_user.cur_page = 0
+        app_user.dialogs = None
         await summarize_request(update, context)
     elif query.data == "search":
+        app_user.cur_page = 0
+        app_user.chosen_ids = None
+        app_user.dialogs = None
         await search_request(update, context)
     elif query.data == "settings":
         await settings(update, context)
@@ -50,6 +55,12 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if query.data == "back":
             await query.delete_message()
             app_user.status = UserState.AUTHENTICATED
+        elif query.data == "prev":
+            prev_page(app_user, len(app_user.dialogs))
+            await summarize_request(update, context, query, True)
+        elif query.data == "next":
+            next_page(app_user, len(app_user.dialogs))
+            await summarize_request(update, context, query, True)
         else:
             await process_summarize_query(update, context, query)
 
@@ -66,8 +77,22 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif query.data == "back":
             await query.delete_message()
             app_user.status = UserState.AUTHENTICATED
+        elif query.data == "prev":
+            prev_page(app_user, len(app_user.dialogs))
+            await search_request(update, context, query, True)
+        elif query.data == "next":
+            next_page(app_user, len(app_user.dialogs))
+            await search_request(update, context, query, True)
+        elif query.data == "back":
+            await query.delete_message()
+            app_user.status = UserState.AUTHENTICATED
+            await menu(update, context)
         else:
             await send_updated_inline_keyboard(update, context, query, save_to=app_user.chosen_ids)
+
+    elif app_user.status == UserState.WAIT_FOR_SEARCH_TEXT:
+        if query.data == "back":
+            await query.delete_message()
 
     # allowed_dialogs
     elif app_user.status == UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION:
@@ -80,7 +105,6 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif app_user.status == UserState.WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE:
         if query.data == "confirm":
             if "choose" in user_info[update.effective_user.id].allowed_dialogs_options:
-                # await query.delete_message()
                 await query_new_allowed_dialogs_categories(update, context, query)
             else:
                 await query.delete_message()
@@ -100,23 +124,16 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif query.data == "back":
             await display_new_allowed_dialogs_options(update, context, query)
         else:
-            # await query.delete_message()
             await query_new_allowed_dialogs(update, context, query)
 
     elif app_user.status == UserState.WAIT_FOR_ALLOWED_DIALOGS_MANUAL_CHOICE:
         if query.data == "confirm":
             await query_new_allowed_dialogs_categories(update, context, query)
         elif query.data == "prev":
-            # await query.delete_message()
-            pages_count = math.ceil(app_user.category_dialogs_count / PAGE_SIZE)
-            app_user.cur_page -= 1
-            if app_user.cur_page < 0:
-                app_user.cur_page = pages_count - 1
+            prev_page(app_user, app_user.category_dialogs_count)
             await query_new_allowed_dialogs(update,context, query)
         elif query.data == "next":
-            # await query.delete_message()
-            pages_count = math.ceil(app_user.category_dialogs_count / PAGE_SIZE)
-            app_user.cur_page = (app_user.cur_page + 1) % pages_count
+            next_page(app_user, app_user.category_dialogs_count)
             await query_new_allowed_dialogs(update,context, query)
         elif query.data == "back":
             await display_new_allowed_dialogs_options(update, context, query)
@@ -171,13 +188,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await process_code(update, context, text)
     elif status == UserState.WAIT_FOR_PASSWORD:
         await process_password(update, context, text)
-    # elif status == UserState.WAIT_FOR_SUMMARIZE_CHAT:
-    #     await process_summarize_query(update, context, text)
-    # elif status == UserState.WAIT_FOR_SEARCH_CHAT:
-    #     await process_search_chat(update, context, text)
     elif status == UserState.WAIT_FOR_SEARCH_TEXT:
         await process_search_text(update, context, text)
-    # elif status == UserState.WAIT_FOR_ALLOWED_DIALOGS_CHOICE:
-    #     await change_allowed_dialogs(update, context, text)
     elif status == UserState.WAIT_FOR_NEW_HISTORY_SIZE:
         await change_history_size(update, context, text)

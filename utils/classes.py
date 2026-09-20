@@ -1,3 +1,4 @@
+import asyncio
 from enum import IntEnum, auto
 
 from telethon.client import telegramclient
@@ -5,11 +6,11 @@ from telethon.client import telegramclient
 
 class UserState(IntEnum):
     LOGGED_OUT = auto()
+    WAIT_FOR_APPROVAL = auto()
     WAIT_FOR_PHONE_NUMBER = auto()
     WAIT_FOR_CODE = auto()
     WAIT_FOR_PASSWORD = auto()
     AUTHENTICATED = auto()
-    # WAIT_FOR_MENU_CHOICE = auto()
     WAIT_FOR_SUMMARIZE_CHAT = auto()
     WAIT_FOR_READ = auto()
     WAIT_FOR_SEARCH_CHAT = auto()
@@ -23,16 +24,18 @@ class UserState(IntEnum):
     WAIT_FOR_NEW_HISTORY_SIZE = auto()
     WAIT_FOR_LOG_OUT_CONFIRMATION = auto()
     CANCEL_OPERATION = auto()
+    WAIT_FOR_REQUEST_ANSWER = auto()
 
 class InitializationInfo:
     def __init__(self):
         self.phone_num = None
         self.phone_code_hash = None
         self.tries_left = 5
+        self.wait_task = None
 
 class AppUser:
     def __init__(self, status: UserState, client: telegramclient.TelegramClient, app_user=None):
-        self._status = app_user.last_status if (app_user and app_user.last_status) else status
+        self._status = status
         self.client = client
         self.dialogs = None
         self.chosen_ids = None
@@ -43,6 +46,7 @@ class AppUser:
         self.last_category = None
         self.category_dialogs_count = None
         self.allowed_dialogs_set = None
+        self.message_id = None
 
         self._init_info = InitializationInfo() if self._status < UserState.AUTHENTICATED else None
         self.preloading = False if not app_user else app_user.preloading
@@ -83,7 +87,15 @@ class AppUser:
 
     @tries_left.setter
     def tries_left(self, val):
+        if val <= 0:
+            self._init_info.wait_task = asyncio.sleep(300)
+        else:
+             self._init_info.wait_task = None
         self._init_info.tries_left = val
+
+    @property
+    def wait(self):
+        return self._init_info.wait_task.done() if self._init_info and self._init_info.wait_task else False
 
 
 class AppUserPreloading:
