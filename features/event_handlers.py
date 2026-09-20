@@ -1,9 +1,10 @@
-from telethon import events, TelegramClient
+from telethon import events, TelegramClient, utils
 from telethon.tl.custom import Dialog, Message
 from telethon.tl.functions.messages import GetForumTopicsRequest
 
-from database.dialogs import store_dialog
+from database.dialogs import store_dialog, get_allowed_dialogs
 from database.messages import store_message, delete_public_message, delete_private_message
+from utils.helpers import get_topic_id
 from utils.state import user_info
 from telethon.tl.types import User, Channel, ForumTopic, UpdateDeleteMessages, UpdateDeleteChannelMessages
 
@@ -32,9 +33,18 @@ async def create_new_message_handler(user_id: int):
 
     @client.on(events.NewMessage)
     async def new_message_handler(event: events.NewMessage.Event):
+        app_user = user_info[user_id]
+        if not app_user.preloading:
+            return
         dialog = await event.get_chat()
         message = event.message
         topic = await get_topic(dialog, message, client)
+
+        dialog_id = dialog.id if isinstance(dialog, Dialog) else utils.get_peer_id(dialog)
+        topic_id = topic.id if topic else 0
+        await get_allowed_dialogs(user_id)
+        if not app_user.allow_all and (dialog_id, topic_id) not in app_user.allowed_dialogs_set:
+            return
 
         store_dialog((dialog, topic), user_id)
         await store_message(message, (dialog, topic), user_id, True)
