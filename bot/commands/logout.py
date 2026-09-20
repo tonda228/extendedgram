@@ -14,10 +14,11 @@ async def log_out_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(text="No, I do not.", callback_data="No")
         ]
     ]
-    await context.bot.send_message(chat_id=update.effective_chat.id,
+    msg = await context.bot.send_message(chat_id=update.effective_chat.id,
                                    text="Do you wish to log out and delete all your data?",
                                    reply_markup=InlineKeyboardMarkup(keyboard))
     user_info[update.effective_user.id].status = UserState.WAIT_FOR_LOG_OUT_CONFIRMATION
+    user_info[update.effective_user.id].message_id = msg.id
 
 async def log_out_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("""
@@ -49,6 +50,6 @@ async def log_out_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
     connection.commit()
 
     if update.effective_user.id in user_info:
-        await user_info[update.effective_user.id].client.disconnect()
+        await user_info[update.effective_user.id].client.log_out()
         del user_info[update.effective_user.id]
     await context.bot.send_message(chat_id=update.effective_chat.id, text="You've successfully logged out.")

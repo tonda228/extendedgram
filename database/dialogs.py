@@ -4,6 +4,7 @@ from telethon.tl.custom import Dialog
 from telethon.tl.types import User, Channel, ForumTopic
 from telethon import functions, utils
 
+from utils.helpers import get_db_topic_id, get_topic_id
 from utils.state import user_info
 from . import cur, connection
 
@@ -17,7 +18,7 @@ def store_channel(channel):
         SET topic_name = EXCLUDED.topic_name
     """, (channel[0].id, topic_id, topic_name))
 
-def store_dialog(dialog, user_id, is_allowed=False):
+def store_dialog(dialog, user_id, is_allowed=False, update=True):
     if isinstance(dialog[0], Dialog):
         dialog = (dialog[0].entity, dialog[1])
 
@@ -40,12 +41,18 @@ def store_dialog(dialog, user_id, is_allowed=False):
         dialog_title = dialog[0].title
 
     is_allowed = user_info[user_id].allow_all or is_allowed
-    cur.execute("""
+    query = """
     INSERT INTO dialog (dialog_id, user_id, title, is_allowed, channel_id, topic_id)
-    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (dialog_id, user_id) DO UPDATE
+    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (dialog_id, user_id) DO """
+    if not update:
+        query += "NOTHING"
+    else:
+        query += """UPDATE
         SET title = EXCLUDED.title,
-            is_allowed = EXCLUDED.is_allowed
-    """, (utils.get_peer_id(dialog[0]), user_id, dialog_title, is_allowed, channel_id, topic_id))
+            is_allowed = EXCLUDED.is_allowed"""
+
+    cur.execute(query, (utils.get_peer_id(dialog[0]), user_id, dialog_title, is_allowed, channel_id, topic_id))
+    connection.commit()
 
 def delete_unused_channels():
     cur.execute("""
@@ -83,12 +90,12 @@ def sync_dialogs(dialogs: list[tuple[Dialog, ForumTopic]], user_id: int):
     delete_unused_channels()
 
 # cant handle a lot of dialogs due to timeout
-async def get_all_dialogs(user_id: int):
+async def get_all_dialogs(user_id: int, topics=True):
     app_user = user_info[user_id]
     dialogs = []
 
     async for dialog in app_user.client.iter_dialogs():
-        if dialog.is_group and getattr(dialog.entity, "forum", False):
+        if topics and dialog.is_group and getattr(dialog.entity, "forum", False):
             result = await app_user.client(
                 functions.messages.GetForumTopicsRequest(
                     peer=dialog,
@@ -151,14 +158,14 @@ async def get_allowed_dialogs(user_id: int):
       AND is_allowed = TRUE
     """, (user_id,))
     allowed_dialogs_set = {
-        dialog.dialog_id
+        (dialog.dialog_id, get_db_topic_id(dialog))
         for dialog in
         cur.fetchall()
     }
 
     allowed_dialogs = []
     for dialog in all_dialogs:
-        if utils.get_peer_id(dialog[0].entity) not in allowed_dialogs_set:
+        if (dialog[0].id, get_topic_id(dialog)) not in allowed_dialogs_set:
             continue
         allowed_dialogs.append(dialog)
     app_user.allowed_dialogs = allowed_dialogs

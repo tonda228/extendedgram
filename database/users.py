@@ -1,3 +1,4 @@
+from utils.helpers import get_user_name
 from utils.state import user_info
 from . import cur, connection
 
@@ -9,6 +10,25 @@ def store_telegram_user(user_id: int, user_name: str):
         SET user_name = EXCLUDED.user_name
     """, (user_id, user_name))
 
+    connection.commit()
+
+def store_app_user(user_id: int, client):
+    cur.execute("""
+    INSERT INTO app_user (user_id,
+                          string_session,
+                          set_read_after_summary,
+                          allow_all,
+                          preloading,
+                          history_size, 
+                          is_admin)
+    VALUES (%s, %s, FALSE, TRUE, FALSE, 100, FALSE) ON CONFLICT (user_id) DO UPDATE
+    SET string_session = EXCLUDED.string_session,
+        set_read_after_summary = EXCLUDED.set_read_after_summary,
+        allow_all = EXCLUDED.allow_all,
+        preloading = EXCLUDED.allow_all,
+        history_size = EXCLUDED.history_size, 
+        is_admin = EXCLUDED.is_admin
+    """, (user_id, client.session.save()))
     connection.commit()
 
 def flip_user_state(user_id: int, column: str):

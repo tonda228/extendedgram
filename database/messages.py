@@ -3,12 +3,13 @@ import datetime as dt
 import shutil
 
 from pgvector import Vector
-from telethon import TelegramClient
+from telethon import TelegramClient, utils
 from telethon.tl.custom import Message, Dialog
 from telethon.tl.types import User, Channel, ForumTopic, MessageActionChatJoinedByLink
 
 from llm.completions import translate_image
 from llm.embeddings import create_message_embedding
+from utils.helpers import get_user_name
 from utils.state import user_info
 from . import cur, connection
 from .dialogs import store_dialog, get_unread_count
@@ -29,10 +30,7 @@ async def store_message(message: Message, dialog: tuple[Dialog, ForumTopic | Non
 
     sender_id = None
     if isinstance(sender, User):
-        if sender.username:
-            sender_name = sender.username
-        else:
-            sender_name = sender.first_name + (sender.last_name if sender.last_name else "")
+        sender_name = get_user_name(sender)
         store_telegram_user(sender.id, sender_name)
         sender_id = sender.id
 
@@ -41,7 +39,7 @@ async def store_message(message: Message, dialog: tuple[Dialog, ForumTopic | Non
         channel_id = dialog[0].entity.id if isinstance(dialog[0], Dialog) else dialog[0].id
         await store_public_message(message, channel_id, topic_id, user_id, sender_id, media_description, embedding)
     else:
-        await store_private_message(message, dialog[0].id, user_id, sender_id, media_description, embedding)
+        await store_private_message(message, dialog, user_id, sender_id, media_description, embedding)
 
     connection.commit()
 
@@ -63,15 +61,15 @@ def delete_public_message(channel_id: int, message_id: int):
     """, (channel_id, message_id))
     connection.commit()
 
-async def store_private_message(message: Message, dialog_id: int, user_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
+async def store_private_message(message: Message, dialog, user_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
+    if isinstance(dialog[0], Dialog):
+        dialog = (dialog[0].entity, dialog[1])
+
     if isinstance(message.action, MessageActionChatJoinedByLink):
         client = user_info[user_id].client
         user = await client.get_entity(message.from_id)
 
-        if user.username:
-            sender_name = user.username
-        else:
-            sender_name = user.first_name + (user.last_name if user.last_name else "")
+        sender_name = get_user_name(user)
         store_telegram_user(user.id, sender_name)
 
         text = f"{sender_name} joined via an invite link."
@@ -89,17 +87,14 @@ async def store_private_message(message: Message, dialog_id: int, user_id: int, 
         embedding
     ) VALUES (%s, %s, %s, %s, %s, %s, %s,%s)
         ON CONFLICT DO NOTHING
-    """, (message.id, dialog_id, user_id, sender_id, message.date, text, media_description, embedding))
+    """, (message.id, utils.get_peer_id(dialog[0]), user_id, sender_id, message.date, text, media_description, embedding))
 
 async def store_public_message(message: Message, channel_id: int, topic_id: int, user_id: int, sender_id: int, media_description: str | None, embedding: Vector | None):
     if isinstance(message.action, MessageActionChatJoinedByLink):
         client = user_info[user_id].client
         user = await client.get_entity(message.from_id)
 
-        if user.username:
-            sender_name = user.username
-        else:
-            sender_name = user.first_name + (user.last_name if user.last_name else "")
+        sender_name = get_user_name(user)
         store_telegram_user(user.id, sender_name)
 
         text = f"{sender_name} joined via an invite link."
@@ -146,30 +141,98 @@ def get_best_public_messages(dialog: tuple[Dialog, ForumTopic | None], embedding
     topic_id = dialog[1].id if dialog[1] else 0
 
     cur.execute("""
-    SELECT pm.*, title, user_name
-    FROM public_message pm
+    WITH best_message AS (
+        SELECT *
+        FROM public_message bm
+        WHERE channel_id = %s
+          and topic_id = %s
+        ORDER BY embedding <=> %s
+        LIMIT 10
+    )    
+    SELECT pm1.*, title, user_name
+    FROM public_message pm1
     JOIN dialog using (dialog_id, user_id)
     JOIN telegram_user tu
-      ON pm.sender_id = tu.user_id
+      ON pm1.sender_id = tu.user_id
     WHERE channel_id = %s
       and topic_id = %s
-    ORDER BY embedding <=> %s
-    LIMIT 10
-    """, (dialog[0].entity.id, topic_id, embedding))
+      and EXISTS (
+        SELECT 1
+        FROM best_message bm1
+        WHERE pm1.message_id = bm1.message_id OR
+            pm1.message_id in (
+            (SELECT message_id 
+            FROM public_message pm2
+            WHERE channel_id = %s
+                AND topic_id = %s
+                AND pm2.date_time >= bm1.date_time
+                AND pm2.message_id != bm1.message_id
+            ORDER by pm2.date_time ASC
+            LIMIT 5)
+            UNION
+            (SELECT message_id
+            FROM public_message pm2
+            WHERE channel_id = %s
+                AND topic_id = %s
+                AND pm2.date_time =< bm1.date_time
+                AND pm2.message_id != bm1.message_id
+            ORDER by pm2.date_time DESC
+            LIMIT 5)
+        )
+    )
+    ORDER BY pm1.message_id ASC
+    """, (dialog[0].entity.id, topic_id, embedding,
+          dialog[0].entity.id, topic_id,
+          dialog[0].entity.id, topic_id,
+          dialog[0].entity.id, topic_id))
     return cur.fetchall()
 
 def get_best_private_messages(user_id: int, dialog: tuple[Dialog, ForumTopic | None], embedding: Vector):
     cur.execute("""
-    SELECT pm.*, title, user_name
-    FROM private_message pm
+    WITH best_message AS (
+        SELECT *
+        FROM private_message bm
+        WHERE dialog_id = %s
+          and user_id = %s
+        ORDER BY embedding <=> %s
+        LIMIT 10
+    )    
+    SELECT pm1.*, title, user_name
+    FROM private_message pm1
     JOIN dialog using (dialog_id, user_id)
     JOIN telegram_user tu
-      ON pm.sender_id = tu.user_id
+      ON pm1.sender_id = tu.user_id
     WHERE dialog_id = %s
-      and pm.user_id = %s
-    ORDER BY embedding <=> %s
-    LIMIT 10
-    """, (dialog[0].id, user_id, embedding))
+      and pm1.user_id = %s
+      and EXISTS (
+        SELECT 1
+        FROM best_message bm1
+        WHERE pm1.message_id = bm1.message_id OR
+            pm1.message_id in (
+            (SELECT message_id 
+            FROM private_message pm2
+            WHERE dialog_id = %s
+                AND pm2.user_id = %s
+                AND pm2.date_time >= bm1.date_time
+                AND pm2.message_id != bm1.message_id
+            ORDER by pm2.date_time ASC
+            LIMIT 5)
+            UNION
+            (SELECT message_id
+            FROM private_message pm2
+            WHERE dialog_id = %s
+                AND pm2.user_id = %s
+                AND pm2.date_time <= bm1.date_time
+                AND pm2.message_id != bm1.message_id
+            ORDER by pm2.date_time DESC
+            LIMIT 5)
+        )
+    )
+    ORDER BY pm1.message_id ASC
+    """, (dialog[0].id, user_id, embedding,
+          dialog[0].id, user_id,
+          dialog[0].id, user_id,
+          dialog[0].id, user_id))
     return cur.fetchall()
 
 # come up with better name
@@ -218,7 +281,7 @@ async def store_unsaved_messages(user_id: int,
     days = user_info[user_id].history_size
     if days == 0:
         days = 10
-    store_dialog(dialog, user_id)
+    store_dialog(dialog, user_id, update=False)
 
     if isinstance(dialog[0].entity, Channel):
         saved_messages = get_public_messages(dialog)
