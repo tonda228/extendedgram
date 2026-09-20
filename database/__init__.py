@@ -36,12 +36,19 @@ def initialize_db() -> None:
                     user_id                BIGINT PRIMARY KEY REFERENCES telegram_user (user_id),
                     string_session         TEXT    NOT NULL,
                     set_read_after_summary BOOLEAN NOT NULL,
-                    set_read_after_search  BOOLEAN NOT NULL,
                     allow_all              BOOLEAN NOT NULL,
                     preloading             BOOLEAN NOT NULL,
                     history_size           BIGINT  NOT NULL, 
-                    is_admin               BOOLEAN NOT NULL DEFAULT FALSE,
-                    last_status            BIGINT
+                    is_admin               BOOLEAN NOT NULL DEFAULT FALSE
+                );
+                
+                CREATE TABLE IF NOT EXISTS user_request
+                (
+                    user_id BIGINT PRIMARY KEY REFERENCES telegram_user (user_id),
+                    is_resolved BOOLEAN NOT NULL,
+                    is_accepted BOOLEAN,
+                    is_user_notified BOOLEAN NOT NULL,
+                    resolved_by BIGINT NULL REFERENCES app_user (user_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS telegram_user
@@ -85,7 +92,7 @@ def initialize_db() -> None:
                         REFERENCES dialog (dialog_id, user_id)
                         ON DELETE CASCADE
                 );
-
+                
                 CREATE TABLE IF NOT EXISTS public_message
                 (
                     message_id        BIGINT,

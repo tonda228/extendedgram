@@ -3,10 +3,11 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes
 
+from bot.commands.requests import resolve_request
 from utils.auth import process_phone_number, process_code, process_password
 from bot.commands.logout import log_out_request, log_out_confirmation
 from utils.classes import UserState
-from database.users import flip_user_state
+from database.users import flip_user_state, send_user_request
 from bot.commands.menu import menu
 from features.preloading import reset_idle_timer
 
@@ -27,15 +28,20 @@ BOT_API_TOKEN = os.environ["BOT_API_TOKEN"]
 application = ApplicationBuilder().token(BOT_API_TOKEN).concurrent_updates(True).build()
 
 async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    query = update.callback_query
+
+    if user_id not in user_info:
+        if query.data == "yes":
+            await send_user_request(update.effective_user, context.bot)
+        await query.answer()
+        return
+
     if not await check_authentication(update, context):
         return
 
-    user_id = update.effective_user.id
     app_user = user_info[user_id]
-    query = update.callback_query
-
     reset_idle_timer(user_id)
-
     await query.answer()
 
     if query.data == "summarize":
@@ -49,6 +55,14 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await search_request(update, context)
     elif query.data == "settings":
         await settings(update, context)
+
+    if app_user.status == UserState.WAIT_FOR_REQUEST_ANSWER:
+        new_user_id = int(query.data.split(" ")[-1])
+        await resolve_request(update, context, user_id, new_user_id, query.data.startswith("accept"))
+        await query.delete_message()
+        return
+    if query.message.id != app_user.message_id:
+        return
 
     # summarize
     elif app_user.status == UserState.WAIT_FOR_SUMMARIZE_CHAT:

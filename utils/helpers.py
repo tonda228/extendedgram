@@ -1,6 +1,12 @@
 import math
 import os
 
+async def accept_user(user_id, bot):
+    await bot.send_message(chat_id=user_id, text="Your request have been accepted.")
+
+async def reject_user(user_id, bot):
+    await bot.send_message(chat_id=user_id, text="Your request have been rejected. If you think that's a mistake you can resend your request.")
+
 def get_db_topic_id(dialog):
     return dialog.topic_id or 0
 
