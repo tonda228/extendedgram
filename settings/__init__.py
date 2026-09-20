@@ -36,5 +36,6 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(text="Back", callback_data="back")
         ]
     ]
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Settings", reply_markup=InlineKeyboardMarkup(keyboard))
+    msg = await context.bot.send_message(chat_id=update.effective_chat.id, text="Settings", reply_markup=InlineKeyboardMarkup(keyboard))
+    user_info[user_id].message_id = msg.id
     app_user.status = UserState.WAIT_FOR_SETTINGS_CHOICE

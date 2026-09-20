@@ -8,6 +8,8 @@ SLEEP_TIME = 60
 
 async def wait_until_idle(user_id: int):
     user = user_preloading[user_id]
+    if not user_info[user_id].preloading:
+        return
     try:
         await asyncio.sleep(SLEEP_TIME)
         user.preloading = asyncio.create_task(start_preloading(user_id))
@@ -20,12 +22,12 @@ async def start_preloading(user_id: int):
 
     try:
         dialogs = await get_recent_dialogs(user_id)
-        print("Starting preloading.")
+        # print("Starting preloading.")
 
         for dialog in dialogs:
             await store_unsaved_messages(user_id, dialog, app_user.client, add_embeddings=True)
     except asyncio.CancelledError:
-        print("Finished preloading.")
+        # print("Finished preloading.")
         pass
 
 def reset_idle_timer(user_id: int, reset=True):

@@ -20,9 +20,10 @@ async def display_history_size(update: Update, context: ContextTypes.DEFAULT_TYP
             InlineKeyboardButton(text="No, I do not.", callback_data="No")
         ]
     ]
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text="Do you wish to change your history size?",
-                                   reply_markup=InlineKeyboardMarkup(keyboard))
+    msg = await context.bot.send_message(chat_id=update.effective_chat.id,
+                                         text="Do you wish to change your history size?",
+                                         reply_markup=InlineKeyboardMarkup(keyboard))
+    user_info[user_id].message_id = msg.id
     user_info[user_id].status = UserState.WAIT_FOR_HISTORY_SIZE_CHANGE_CONFIRMATION
 
 async def query_new_history_size(update: Update, context: ContextTypes.DEFAULT_TYPE):

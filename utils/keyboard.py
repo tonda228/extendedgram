@@ -1,6 +1,8 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from utils.state import user_info
+
 
 def update_inline_button(button, data, new_state=None, save_to=None):
     if button.callback_data != data:
@@ -31,6 +33,7 @@ async def send_updated_inline_keyboard(update: Update, context: ContextTypes.DEF
     keyboard = query.message.reply_markup.inline_keyboard
     new_markup = update_inline_keyboard(keyboard, query.data, new_state=new_state, save_to=save_to)
 
-    await context.bot.edit_message_reply_markup(chat_id=update.effective_chat.id,
+    msg = await context.bot.edit_message_reply_markup(chat_id=update.effective_chat.id,
                                                 message_id=query.message.message_id,
                                                 reply_markup=new_markup)
+    user_info[update.effective_user.id].message_id = msg.id
