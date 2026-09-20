@@ -11,13 +11,14 @@ from features.search import search_request
 from features.summarize import summarize_request
 from settings import settings
 from utils import infinite_task
-from utils.initialize_users import initialize_users
+from utils.initialize_users import initialize_users, initialize_user_requests
 
 # maybe set timer before shutdown
 # encode sessionstring and decrypt using user-provided password hash
 
 async def main():
     await initialize_users()
+    await initialize_user_requests()
     await application.initialize()
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
