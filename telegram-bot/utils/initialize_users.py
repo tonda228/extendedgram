@@ -60,6 +60,7 @@ async def initialize_users() -> None:
     SELECT * FROM app_user
     """)
     app_users = cur.fetchall()
+    print(app_users)
     if not app_users:
         return
     for app_user in app_users:

@@ -30,7 +30,13 @@ def drop_tables() -> None:
     """)
 
 def initialize_db() -> None:
-    cur.execute("""                    
+    cur.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_user
+                (
+                    user_id   BIGINT PRIMARY KEY,
+                    user_name TEXT NOT NULL
+                );
+                                    
                 CREATE TABLE IF NOT EXISTS app_user
                 (
                     user_id                BIGINT PRIMARY KEY REFERENCES telegram_user (user_id),
@@ -49,12 +55,6 @@ def initialize_db() -> None:
                     is_accepted BOOLEAN,
                     is_user_notified BOOLEAN NOT NULL,
                     resolved_by BIGINT NULL REFERENCES app_user (user_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS telegram_user
-                (
-                    user_id   BIGINT PRIMARY KEY,
-                    user_name TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS channel

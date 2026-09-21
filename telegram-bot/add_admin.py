@@ -2,7 +2,7 @@ import os, asyncio
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError, PhoneNumberInvalidError
 from telethon.sessions import StringSession
 
 from database import cur, connection
@@ -13,13 +13,30 @@ load_dotenv()
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 
+def admin_exists():
+    cur.execute("""
+    SELECT * FROM app_user WHERE is_admin = TRUE
+    """)
+    result = cur.fetchone()
+    return result is not None
+
 async def login():
+    if admin_exists():
+        return
+
     client = TelegramClient(StringSession(), API_ID, API_HASH)
     await client.connect()
 
-    phone_num = input("Enter your phone number: ")
 
-    result = await client.send_code_request(phone_num)
+    # result = await client.send_code_request(phone_num)
+    while True:
+        try:
+            phone_num = input("Enter your phone number: ")
+            result = await client.send_code_request(phone_num)
+        except (TypeError, PhoneNumberInvalidError):
+            print("Invalid phone number try again.")
+        else:
+            break
 
     code = input("Enter the code you received: ")
 
@@ -42,16 +59,15 @@ async def save_admin(client):
     INSERT INTO app_user (user_id,
                           string_session,
                           set_read_after_summary,
-                          set_read_after_search,
                           allow_all,
+                          preloading,
+                          history_size,
                           is_admin
-    ) VALUES (%s, %s, %s, %s, %s, TRUE) ON CONFLICT (user_id) DO UPDATE
+    ) VALUES (%s, %s, FALSE, TRUE, FALSE, 0, TRUE) ON CONFLICT (user_id) DO UPDATE
     SET is_admin = TRUE,
         string_session = EXCLUDED.string_session
-    """, (user.id, client.session.save(), False, False, True))
+    """, (user.id, client.session.save()))
     connection.commit()
 
-# with TelegramClient(StringSession(), API_ID, API_HASH) as client:
-#     client.loop.run_until_complete(save_admin())
-
-asyncio.run(login())
+if __name__ == "__main__":
+    asyncio.run(login())
