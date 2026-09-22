@@ -7,7 +7,7 @@ from telethon.tl.types import User, Channel
 
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
-from llm import llm_client, URL
+from llm import llm_client
 from database.dialogs import get_allowed_dialogs, update_dialog_priorities, delete_old_dialog_priorities
 from database.messages import store_unsaved_messages, get_best_public_messages, get_best_private_messages
 from bot.commands.menu import menu

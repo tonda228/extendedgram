@@ -13,9 +13,11 @@ def get_db_topic_id(dialog):
 def get_topic_id(dialog):
     return dialog[1].id if dialog[1] else 0
 
-def get_edit_message_text_func(message_id, context):
+def get_edit_message_text_func(message_id, context=None, bot=None):
+    if bot is None:
+        bot = context.bot
     async def func(chat_id, text, reply_markup):
-        return await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
+        return await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
     return func
 
 def get_user_name(user):

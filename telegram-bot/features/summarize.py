@@ -19,7 +19,7 @@ from llm import llm_client
 from utils.check_authentication import check_authentication
 from utils.helpers import get_message_info, get_edit_message_text_func
 
-PAGE_SIZE = os.environ["PAGE_SIZE"]
+PAGE_SIZE = int(os.environ["PAGE_SIZE"])
 
 async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None, edit=False):
     if not await check_authentication(update, context):

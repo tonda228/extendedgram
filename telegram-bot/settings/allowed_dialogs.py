@@ -199,6 +199,22 @@ async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAUL
     app_user.last_category = category
     app_user.category_dialogs_count = dialog_id
 
+def is_suitable(dialog, options):
+    save_channels = "channels" in options
+    save_chats = "chats" in options
+    save_users = "users" in options
+    save_bots = "bots" in options
+
+    if save_channels and isinstance(dialog[0].entity, Channel):
+        return True
+    if save_chats and isinstance(dialog[0].entity, Chat):
+        return True
+    if save_users and isinstance(dialog[0].entity, User) and not dialog[0].entity.bot:
+        return True
+    if save_bots and isinstance(dialog[0].entity, User) and dialog[0].entity.bot:
+        return True
+    return False
+
 async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     app_user = user_info[user_id]
@@ -208,31 +224,11 @@ async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_T
     ids = {int(index) for index in app_user.chosen_ids} if app_user.chosen_ids is not None else set()
     allowed_dialogs_set = app_user.allowed_dialogs_set if app_user.allowed_dialogs_set is not None else set()
 
-    reset_idle_timer(user_id)
-
-    save_channels = "channels" in options
-    save_chats = "chats" in options
-    save_users = "users" in options
-    save_bots = "bots" in options
     manually = "choose" in options
-
     new_allowed_dialogs = []
 
-    # refactor this
     for dialog in all_dialogs:
-        if save_channels and isinstance(dialog[0].entity, Channel):
-            store_dialog(dialog, user_id, True)
-            new_allowed_dialogs.append(dialog)
-            allowed_dialogs_set.add((dialog[0].id, get_topic_id(dialog)))
-        elif save_chats and isinstance(dialog[0].entity, Chat):
-            store_dialog(dialog, user_id, True)
-            new_allowed_dialogs.append(dialog)
-            allowed_dialogs_set.add((dialog[0].id, get_topic_id(dialog)))
-        elif save_users and isinstance(dialog[0].entity, User) and not dialog[0].entity.bot:
-            store_dialog(dialog, user_id, True)
-            new_allowed_dialogs.append(dialog)
-            allowed_dialogs_set.add((dialog[0].id, get_topic_id(dialog)))
-        elif save_bots and isinstance(dialog[0].entity, User) and dialog[0].entity.bot:
+        if is_suitable(dialog, options):
             store_dialog(dialog, user_id, True)
             new_allowed_dialogs.append(dialog)
             allowed_dialogs_set.add((dialog[0].id, get_topic_id(dialog)))
@@ -254,6 +250,8 @@ async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_T
                 app_user.allowed_dialogs_set.discard((dialog[0].id, get_topic_id(dialog)))
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Changes have been saved.")
+
+    reset_idle_timer(user_id)
 
     app_user.allowed_dialogs = new_allowed_dialogs
     app_user.allowed_dialogs_options = None

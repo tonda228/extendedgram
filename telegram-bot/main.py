@@ -17,7 +17,7 @@ from utils.initialize_users import initialize_users, initialize_user_requests
 # maybe set timer before shutdown
 # encrypt sessionstring and decrypt using user-provided password
 # make solo and private version
-# replace settings with menu and vice versa
+# fix turn off message
 
 async def main():
     await initialize_users()

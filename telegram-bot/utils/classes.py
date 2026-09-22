@@ -11,6 +11,7 @@ class UserState(IntEnum):
     WAIT_FOR_CODE = auto()
     WAIT_FOR_PASSWORD = auto()
     AUTHENTICATED = auto()
+    WAIT_FOR_MENU_CHOICE = auto()
     WAIT_FOR_SUMMARIZE_CHAT = auto()
     WAIT_FOR_READ = auto()
     WAIT_FOR_SEARCH_CHAT = auto()

@@ -1,13 +1,15 @@
+import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
+from utils.helpers import get_edit_message_text_func
 from utils.state import user_info
 from utils.check_authentication import check_authentication
 
 
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None, edit=False):
     if not await check_authentication(update, context):
         return
 
@@ -36,6 +38,14 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(text="Back", callback_data="back")
         ]
     ]
-    msg = await context.bot.send_message(chat_id=update.effective_chat.id, text="Settings", reply_markup=InlineKeyboardMarkup(keyboard))
-    user_info[user_id].message_id = msg.id
+    markup = InlineKeyboardMarkup(keyboard)
+    if edit:
+        sender_func = get_edit_message_text_func(query.message.message_id, context)
+    else:
+        sender_func = context.bot.send_message
+    try:
+        msg = await sender_func(chat_id=update.effective_chat.id, text="Settings", reply_markup=markup)
+        user_info[user_id].message_id = msg.id
+    except telegram.error.BadRequest as e:
+        print(e)
     app_user.status = UserState.WAIT_FOR_SETTINGS_CHOICE

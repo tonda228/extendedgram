@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes
 
 from bot.commands.requests import resolve_request
+from bot.commands.start import start
 from utils.auth import process_phone_number, process_code, process_password
 from bot.commands.logout import log_out_request, log_out_confirmation
 from utils.classes import UserState
@@ -30,20 +31,26 @@ application = ApplicationBuilder().token(BOT_API_TOKEN).concurrent_updates(True)
 async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     query = update.callback_query
+    await query.answer()
 
     if user_id not in user_info:
         if query.data == "yes":
             await send_user_request(update.effective_user, context.bot)
-        await query.answer()
+        elif query.data == "no":
+            pass
+        else:
+            await start(update, context)
+
         return
 
     if not await check_authentication(update, context):
         return
 
     app_user = user_info[user_id]
-    reset_idle_timer(user_id)
-    await query.answer()
 
+    reset_idle_timer(user_id)
+
+    # menu
     if query.data == "summarize":
         app_user.cur_page = 0
         app_user.dialogs = None
@@ -56,11 +63,15 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif query.data == "settings":
         await settings(update, context)
 
-    if app_user.status == UserState.WAIT_FOR_REQUEST_ANSWER:
-        new_user_id = int(query.data.split(" ")[-1])
-        await resolve_request(update, context, user_id, new_user_id, query.data.startswith("accept"))
-        await query.delete_message()
+    elif app_user.status == UserState.WAIT_FOR_REQUEST_ANSWER:
+        try:
+            new_user_id = int(query.data.split(" ")[-1])
+            await resolve_request(update, context, user_id, new_user_id, query.data.startswith("accept"))
+            await query.delete_message()
+        except:
+            pass
         return
+
     if query.message.id != app_user.message_id:
         return
 
@@ -178,7 +189,7 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif query.data == "log_out":
             await log_out_request(update, context)
         elif query.data == "back":
-            await menu(update, context)
+            await menu(update, context, query=query, edit=True)
 
     # history_size
     elif app_user.status == UserState.WAIT_FOR_HISTORY_SIZE_CHANGE_CONFIRMATION:

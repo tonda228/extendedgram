@@ -176,7 +176,7 @@ DB_NAME=your_db_name
 DB_HOST=db
 
 # LLM
-OPEN_AI_URL=http://model-runner.docker.internal:12434/engines/v1/
+OPEN_AI_URL=http://model-runner.docker.internal/engines/v1/
 COMPLETIONS_MODEL=docker.io/ai/qwen3-vl:8B
 EMBEDDING_MODEL=ai/qwen3-embedding:0.6b
 ```
