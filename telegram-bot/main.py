@@ -18,6 +18,7 @@ from utils.initialize_users import initialize_users, initialize_user_requests
 # encrypt sessionstring and decrypt using user-provided password
 # make solo and private version
 # fix turn off message
+# add download status indication
 
 async def main():
     await initialize_users()
