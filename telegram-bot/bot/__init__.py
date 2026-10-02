@@ -181,12 +181,15 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if query.data in ["allow_all", "set_read_after_summary", "preloading"]:
             column = query.data
             flip_user_state(user_id, column)
-
             await send_updated_inline_keyboard(update, context, query)
         elif query.data == "allowed_dialogs":
             await display_allowed_dialogs(update, context, query)
         elif query.data == "history_size":
             await display_history_size(update, context)
+        elif query.data == "order_by":
+            app_user.order_by = "title" if app_user.order_by == "date" else "date"
+            update_ordering(user_id, app_user.order_by)
+            await settings(update, context, query, True)
         elif query.data == "log_out":
             await log_out_request(update, context)
         elif query.data == "back":

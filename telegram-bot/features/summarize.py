@@ -32,6 +32,7 @@ async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     reset_idle_timer(user_id)
 
     if app_user.dialogs is None:
+        app_user.allowed_dialogs = None
         allowed_dialogs = await get_allowed_dialogs(user_id)
         if len(allowed_dialogs) == 0:
             await context.bot.send_message(chat_id=update.effective_chat.id,

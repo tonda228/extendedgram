@@ -55,6 +55,7 @@ class AppUser:
         self.set_read_after_summary = False if not app_user else app_user.set_read_after_summary
         self.allow_all = True if not app_user else app_user.allow_all
         self.is_admin = False if not app_user else app_user.is_admin
+        self.order_by = "date" if not app_user or app_user.order_by is None else app_user.order_by
 
     @property
     def status(self):

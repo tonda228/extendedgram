@@ -20,7 +20,7 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE, query=Non
     allow_all = "✅" if app_user.allow_all else "❌"
     set_read_after_summary = "✅" if app_user.set_read_after_summary else "❌"
     preloading = "✅" if app_user.preloading else "❌"
-    history_size = app_user.history_size
+    order_by = app_user.order_by
     keyboard = [
         [
             InlineKeyboardButton(text="Allowed dialogs", callback_data="allowed_dialogs"),
@@ -31,7 +31,10 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE, query=Non
             InlineKeyboardButton(text=f"Preloading: {preloading}", callback_data="preloading")
         ],
         [
-            InlineKeyboardButton(text=f"History size: {history_size} days", callback_data="history_size")
+            InlineKeyboardButton(text=f"History size: {app_user.history_size} days", callback_data="history_size")
+        ],
+        [
+            InlineKeyboardButton(text=f"Order dialogs by: {order_by}", callback_data="order_by")
         ],
         [
             InlineKeyboardButton(text="Log out", callback_data="log_out"),

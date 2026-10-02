@@ -12,6 +12,14 @@ def store_telegram_user(user_id: int, user_name: str):
 
     connection.commit()
 
+def update_ordering(user_id: int, order_by: str):
+    cur.execute("""
+    UPDATE app_user
+    SET order_by = %s
+    WHERE user_id = %s
+    """, (order_by, user_id))
+    connection.commit()
+
 def store_app_user(user_id: int, client):
     cur.execute("""
     INSERT INTO app_user (user_id,

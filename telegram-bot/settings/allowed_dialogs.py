@@ -24,6 +24,9 @@ async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"All dialogs are allowed.")
     else:
         allowed_dialogs = await get_allowed_dialogs(user_id)
+        order_by = (lambda x: get_full_chat_name(x)) if app_user.order_by == "title" else None
+        if order_by:
+            allowed_dialogs.sort(key=order_by)
         if len(allowed_dialogs) == 0:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"No dialogs are allowed.")
         else:
@@ -99,6 +102,9 @@ async def query_new_allowed_dialogs_categories(update: Update, context: ContextT
     save_chats = "chats" in app_user.allowed_dialogs_options
     save_users = "users" in app_user.allowed_dialogs_options
     save_bots = "bots" in app_user.allowed_dialogs_options
+
+    if app_user.order_by == "title":
+        all_dialogs.sort(key=lambda x: get_full_chat_name(x))
 
     index = 0
     for dialog in all_dialogs:

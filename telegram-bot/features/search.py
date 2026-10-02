@@ -28,7 +28,12 @@ async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE, que
 
     reset_idle_timer(user_id)
 
-    dialogs = app_user.dialogs if app_user.dialogs is not None else await get_allowed_dialogs(user_id)
+    if app_user.dialogs is None:
+        app_user.dialogs = await get_allowed_dialogs(user_id)
+        order_by = (lambda x: get_full_chat_name(x)) if app_user.order_by == "title" else None
+        if order_by:
+            app_user.dialogs.sort(key=order_by)
+    dialogs = app_user.dialogs
 
     if len(dialogs) == 0:
         await context.bot.send_message(chat_id=update.effective_chat.id,

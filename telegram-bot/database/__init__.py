@@ -29,6 +29,12 @@ def drop_tables() -> None:
     DROP TABLE IF EXISTS private_message CASCADE;
     """)
 
+cur.execute("""
+ALTER TABLE app_user
+ADD COLUMN IF NOT EXISTS order_by TEXT
+""")
+connection.commit()
+
 def initialize_db() -> None:
     cur.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_user
@@ -39,13 +45,14 @@ def initialize_db() -> None:
                                     
                 CREATE TABLE IF NOT EXISTS app_user
                 (
-                    user_id                BIGINT PRIMARY KEY REFERENCES telegram_user (user_id),
-                    string_session         TEXT    NOT NULL,
+                    user_id BIGINT PRIMARY KEY REFERENCES telegram_user (user_id) ON DELETE CASCADE,
+                    string_session TEXT NOT NULL,
                     set_read_after_summary BOOLEAN NOT NULL,
-                    allow_all              BOOLEAN NOT NULL,
-                    preloading             BOOLEAN NOT NULL,
-                    history_size           BIGINT  NOT NULL, 
-                    is_admin               BOOLEAN NOT NULL DEFAULT FALSE
+                    allow_all BOOLEAN NOT NULL,
+                    preloading BOOLEAN NOT NULL,
+                    history_size BIGINT NOT NULL,
+                    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                    order_by TEXT NOT NULL DEFAULT 'date',
                 );
                 
                 CREATE TABLE IF NOT EXISTS user_request
@@ -73,7 +80,7 @@ def initialize_db() -> None:
                     title      TEXT    NOT NULL,
                     is_allowed BOOLEAN NOT NULL DEFAULT TRUE,
                     channel_id BIGINT  NULL,
-                    topic_id   BIGINT  NULL,
+                    topic_id   BIGINT  NOT NULL DEFAULT 0,
 
                     PRIMARY KEY (dialog_id, user_id),
                     FOREIGN KEY (channel_id, topic_id)
