@@ -1,9 +1,5 @@
 import html
 import json
-import math
-import os
-
-import openai
 import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -11,6 +7,7 @@ from telethon import functions
 from telethon.tl.types import User, Channel
 
 from bot.commands.menu import menu
+from llm.completions import send_data
 from utils.classes import UserState
 from database.dialogs import get_allowed_dialogs, get_unread_count
 from database.messages import store_unsaved_messages, get_public_messages_for_summarization, \
@@ -18,7 +15,6 @@ from database.messages import store_unsaved_messages, get_public_messages_for_su
 from features.preloading import reset_idle_timer
 from utils.config import config_file
 from utils.state import user_info
-from llm import llm_client
 from utils.check_authentication import check_authentication
 from utils.helpers import get_message_info, get_edit_message_text_func
 
@@ -83,61 +79,6 @@ async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         print(e)
     user_info[user_id].dialogs = unread_dialogs
 
-def get_request_data(data, message_text=None):
-    response_format = """
-    [
-        {
-            "start_message_id": 123,
-            "end_message_id": 456,
-            "topic": "...",
-            "summary": "..."
-        }
-    ]
-    """
-    if not message_text:
-        message_text = ("Summarize the messages very concisely. "
-                        "For each message, you first receive the sender name and then the message. "
-                        "Group related messages into topics, but do not merge unrelated conversations. "
-                        "For each topic, include the first and last message IDs. "
-                        "Return at most 10 topics. "
-                        "Prioritize only important information, decisions, questions, plans, and conclusions. "
-                        "Ignore greetings, repetition, jokes, filler, and minor details unless they are necessary to understand the topic. "
-                        "For every 20 input messages, produce approximately 1 topic summary when possible. "
-                        "Each topic summary should normally be 1-7 sentences and no more than 200 words. "
-                        "Use a surface-level summary only: do not retell the conversation message by message. "
-                        "Do not include details that are not essential. "
-                        "If several messages repeat the same idea, mention it only once. "
-                        "If the conversation is short or contains little important information, return fewer topics rather than adding detail. "
-                        "Add information about who says what if that person talks about his situation")
-
-    request_data = [
-        {
-            "role": "system",
-            "content":  [
-                {
-                    "type": "text",
-                    "text": message_text + f"\nResponse give in json in following format:\n {response_format}"
-                }
-            ],
-        },
-        {
-            "role": "user",
-            "content": data
-        }
-    ]
-    return request_data
-
-async def combine_responses(results):
-    data = [{
-        "type": "text",
-        "text": json.dumps(results)
-    }]
-
-    response = await llm_client.chat.completions.create(
-        model=os.environ["COMPLETIONS_MODEL"],
-        messages=get_request_data(data, "Combine those topics. Leave only 10 topics."))
-    return json.loads(response.choices[0].message.content)
-
 async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
     if not update.effective_user:
         return
@@ -161,15 +102,14 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
     data = []
     messages_count = chosen_dialog[0].unread_count if not chosen_dialog[1] else chosen_dialog[1].unread_count
 
-    message = await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text="Downloading required messages. It might take a few minutes.")
+    message1 = await context.bot.send_message(chat_id=update.effective_chat.id,
+                                             text="Downloading required messages. It might take a few minutes.")
+    message2 = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
     reset_idle_timer(user_id, reset=False)
-
-    await store_unsaved_messages(user_id, chosen_dialog, client, False)
-
-    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message.message_id,
+    await store_unsaved_messages(user_id, chosen_dialog, client, False, context.bot,0, messages_count, message2)
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message1.message_id,
                                         text="Download is completed.")
-
+    await context.bot.delete_message(user_id, message2.id)
     reset_idle_timer(user_id)
 
     if isinstance(chosen_dialog[0].entity, Channel):
@@ -180,35 +120,48 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
     for message in messages:
         get_message_info(data, message)
 
+    response_format = """
+        [
+            {
+                "start_message_id": 123,
+                "end_message_id": 456,
+                "topic": "...",
+                "summary": "..."
+            }
+        ]
+        """
+    format_text = f"\nResponse give in json in following format:\n {response_format}"
+    message_text = ("Summarize the messages very concisely. "
+                    "For each message, you first receive the sender name and then the message. "
+                    "Group related messages into topics, but do not merge unrelated conversations. "
+                    "For each topic, include the first and last message IDs. "
+                    "Return at most 10 topics. "
+                    "Prioritize only important information, decisions, questions, plans, and conclusions. "
+                    "Ignore greetings, repetition, jokes, filler, and minor details unless they are necessary to understand the topic. "
+                    "For every 20 input messages, produce approximately 1 topic summary when possible. "
+                    "Each topic summary should normally be 1-5 sentences and no more than 150 words. "
+                    "Use a surface-level summary only: do not retell the conversation message by message. "
+                    "Do not include details that are not essential. "
+                    "If several messages repeat the same idea, mention it only once. "
+                    "Respond in the same language as the messages you received "
+                    "If the conversation is short or contains little important information, return fewer topics rather than adding detail. "
+                    "Add information about who says what if that person talks about his situation" + format_text)
 
-    iterations = 1
-    request_size = None
-    results = []
-    while True:
-        try:
-            start = 0
-            for i in range(iterations):
-                if request_size is not None:
-                    request_data = get_request_data(data[start:start+request_size])
-                    start += request_size
-                else:
-                    request_data = get_request_data(data)
-                response = await llm_client.chat.completions.create(
-                    model=os.environ["COMPLETIONS_MODEL"],
-                    messages=request_data)
-                results += json.loads(response.choices[0].message.content)
-        except json.decoder.JSONDecodeError:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Error occurred. Retrying...")
-        except openai.BadRequestError as e:
-            iterations *= 2
-            request_size = len(data) // iterations
-            if len(data) % iterations != 0:
-                iterations += 1
-        else:
-            break
+    message = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
+    try:
+        results = await send_data(update, context, data, message_text, message, True, 5, 0, len(data))
+    except json.decoder.JSONDecodeError:
+        return
 
-    if iterations > 1:
-        results = await combine_responses(results)
+    if len(results) > 10:
+        message_text = "Combine those topics. Leave only 10 topics." + format_text
+        data = [
+            {"type": "text", "text": json.dumps(result)}
+            for result in results
+        ]
+        results = await send_data(update, context, data, message_text, for_summary=True)
+
+    await context.bot.delete_message(user_id, message.id)
 
     for index, result in enumerate(results, start=1):
         messages = ""

@@ -58,6 +58,33 @@ def get_message_info(data, message):
         "text": full_text
     })
 
+def get_request_data(data, message_text):
+    request_data = [
+        {
+            "role": "system",
+            "content":  [
+                {
+                    "type": "text",
+                    "text": message_text
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": data
+        }
+    ]
+    return request_data
+
+async def resend_processing_status(user_id, bot, message, cur_status, msg_count):
+    processed = int(cur_status / msg_count * 100)
+    download_bar = "|" + "█" * processed + ' ' * (100 - processed) + "| " + str(processed) + "%"
+    try:
+        await bot.edit_message_text(chat_id=user_id, message_id=message.id, text=download_bar)
+    except Exception as e:
+        print(e)
+        pass
+
 def prev_page(app_user, length):
     pages_count = math.ceil(length / int(os.environ["PAGE_SIZE"]))
     app_user.cur_page -= 1
@@ -67,3 +94,6 @@ def prev_page(app_user, length):
 def next_page(app_user, length):
     pages_count = math.ceil(length / int(os.environ["PAGE_SIZE"]))
     app_user.cur_page = (app_user.cur_page + 1) % pages_count
+
+def most_recent(dialog):
+    return dialog[0].title

@@ -1,6 +1,5 @@
 import os
 import datetime as dt
-import shutil
 
 from pgvector import Vector
 from telethon import TelegramClient, utils
@@ -9,7 +8,7 @@ from telethon.tl.types import User, Channel, ForumTopic, MessageActionChatJoined
 
 from llm.completions import translate_image
 from llm.embeddings import create_message_embedding
-from utils.helpers import get_user_name
+from utils.helpers import get_user_name, resend_processing_status
 from utils.state import user_info
 from . import cur, connection
 from .dialogs import store_dialog, get_unread_count
@@ -240,7 +239,7 @@ def get_public_messages_for_summarization(channel: tuple[Dialog, ForumTopic | No
     topic_id = channel[1].id if channel[1] else 0
 
     cur.execute("""
-    select * 
+    select distinct * 
     from (select pm.*, user_name, title
         from public_message pm
         join dialog d
@@ -258,7 +257,7 @@ def get_public_messages_for_summarization(channel: tuple[Dialog, ForumTopic | No
 
 def get_private_messages_for_summarization(dialog: tuple[Dialog, None], user_id: int, messages_count: int):
     cur.execute("""
-    select *
+    select distinct *
     from (select pm.*, user_name, title
           from private_message pm
           join dialog d using (dialog_id, user_id)
@@ -275,7 +274,11 @@ def get_private_messages_for_summarization(dialog: tuple[Dialog, None], user_id:
 async def store_unsaved_messages(user_id: int,
                                  dialog: tuple[Dialog, ForumTopic | None],
                                  client: TelegramClient,
-                                 add_embeddings = False) -> None:
+                                 add_embeddings = False,
+                                 bot=None,
+                                 cur_status: int|None = None,
+                                 msg_count: int|None = None,
+                                 download_message = None) -> None:
     saved_id = 0
     limit = get_unread_count(dialog) if not add_embeddings else None
     days = user_info[user_id].history_size
@@ -307,3 +310,7 @@ async def store_unsaved_messages(user_id: int,
             continue
 
         await store_message(message, dialog, user_id, add_embeddings)
+
+        if download_message:
+            cur_status += 1
+            await resend_processing_status(user_id, bot, download_message, cur_status, msg_count)

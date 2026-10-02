@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telethon.tl.types import User, Channel
 
+from llm.completions import send_data
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
 from llm import llm_client
@@ -12,8 +13,8 @@ from database.dialogs import get_allowed_dialogs, update_dialog_priorities, dele
 from database.messages import store_unsaved_messages, get_best_public_messages, get_best_private_messages
 from bot.commands.menu import menu
 from llm.embeddings import create_embedding
-from utils.helpers import get_edit_message_text_func, get_message_info
 from utils.config import config_file
+from utils.helpers import get_edit_message_text_func, get_message_info, get_full_chat_name, resend_processing_status
 from utils.state import user_info
 from utils.check_authentication import check_authentication
 
@@ -104,45 +105,39 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     embedding = await create_embedding(text)
     best_messages = []
 
-    message = await context.bot.send_message(chat_id=update.effective_chat.id, text="Downloading required messages. It might take a few minutes.")
+    message1 = await context.bot.send_message(chat_id=update.effective_chat.id,
+                                              text="Downloading messages form required dialogs. It might take a few minutes.")
     reset_idle_timer(user_id, reset=False)
 
+    cur_status = 0
+    message2 = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
     for dialog in queried_dialogs:
         await store_unsaved_messages(user_id, dialog, client, True)
         if isinstance(dialog[0], Channel):
             best_messages += get_best_public_messages(dialog, embedding)
         else:
             best_messages += get_best_private_messages(user_id, dialog, embedding)
+        cur_status += 1
+        await resend_processing_status(user_id, context.bot, message2, cur_status, len(queried_dialogs))
 
-    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message.message_id,
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message1.message_id,
                                    text="Download is completed.")
+    await context.bot.delete_message(user_id, message2.id)
     reset_idle_timer(user_id)
 
     data = []
     for message in best_messages:
         get_message_info(data, message)
 
-    request_data = [
-        {
-            "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Give short answer on the following question: " + text
-                }
-            ],
-        },
-        {
-            "role": "user",
-            "content": data
-        }
-    ]
-    response = await llm_client.chat.completions.create(
-        model=os.environ["COMPLETIONS_MODEL"],
-        messages=request_data)
-    result = response.choices[0].message.content
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=result, parse_mode="Markdown")
+    message_text = "Give short answer on the following question: " + text
+    message = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
+    result = await send_data(update, context, data, message_text, message, True, 5, 0, len(data))
+    # response = await llm_client.chat.completions.create(
+    #     model=os.environ["COMPLETIONS_MODEL"],
+    #     messages=request_data)
+    if len(result) > 1:
+        message_text = "Use those sentences to give an answer on the following question: " + text
+        result = await send_data(update, context, data, message_text)
 
-    user_info[user_id].chosen_ids = None
-
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=result[0], parse_mode="Markdown")
     await menu(update, context)
