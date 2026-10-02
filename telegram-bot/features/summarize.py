@@ -16,12 +16,13 @@ from database.dialogs import get_allowed_dialogs, get_unread_count
 from database.messages import store_unsaved_messages, get_public_messages_for_summarization, \
     get_private_messages_for_summarization
 from features.preloading import reset_idle_timer
+from utils.config import config_file
 from utils.state import user_info
 from llm import llm_client
 from utils.check_authentication import check_authentication
 from utils.helpers import get_message_info, get_edit_message_text_func
 
-PAGE_SIZE = int(os.environ["PAGE_SIZE"])
+PAGE_SIZE = config_file["page_size"]
 
 async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None, edit=False):
     if not await check_authentication(update, context):

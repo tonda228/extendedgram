@@ -4,7 +4,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ./telegram-bot/media:/app/media
+      - ./telegram-bot/media:/app/media\
+      - ./telegram-bot/utils/config.json:/app/config.json
     depends_on:
       db:
         condition: service_healthy

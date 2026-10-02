@@ -25,7 +25,7 @@ def store_dialog(dialog, user_id, is_allowed=False, update=True):
     is_channel = isinstance(dialog[0], Channel)
 
     channel_id = dialog[0].id if is_channel else None
-    topic_id = dialog[1].id if dialog[1] else None
+    topic_id = dialog[1].id if dialog[1] else 0
 
     if is_channel:
         store_channel(dialog)
@@ -50,7 +50,6 @@ def store_dialog(dialog, user_id, is_allowed=False, update=True):
         query += """UPDATE
         SET title = EXCLUDED.title,
             is_allowed = EXCLUDED.is_allowed"""
-
     cur.execute(query, (utils.get_peer_id(dialog[0]), user_id, dialog_title, is_allowed, channel_id, topic_id))
     connection.commit()
 
@@ -106,8 +105,6 @@ async def get_all_dialogs(user_id: int, topics=True):
                 )
             )
             for topic in result.topics:
-                if topic.unread_count == 0:
-                    continue
                 dialogs.append((dialog, topic))
             continue
         dialogs.append((dialog, None))
@@ -154,11 +151,12 @@ async def get_allowed_dialogs(user_id: int):
     cur.execute("""
     SELECT *
     FROM dialog
+    LEFT JOIN channel using (channel_id, topic_id)
     WHERE user_id = %s
       AND is_allowed = TRUE
     """, (user_id,))
     allowed_dialogs_set = {
-        (dialog.dialog_id, get_db_topic_id(dialog))
+        (dialog.dialog_id, dialog.topic_id)
         for dialog in
         cur.fetchall()
     }

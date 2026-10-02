@@ -18,6 +18,7 @@ from settings import settings
 from settings.allowed_dialogs import display_allowed_dialogs, change_allowed_dialogs, \
     display_new_allowed_dialogs_options, query_new_allowed_dialogs_categories, query_new_allowed_dialogs, PAGE_SIZE
 from settings.history_size import display_history_size, change_history_size, query_new_history_size
+from utils.config import config_file
 from utils.helpers import next_page, prev_page
 from utils.state import user_info
 from features.summarize import summarize_request, process_summarize_query
@@ -27,20 +28,20 @@ from utils.keyboard import send_updated_inline_keyboard
 # Telegram BOT
 BOT_API_TOKEN = os.environ["BOT_API_TOKEN"]
 application = ApplicationBuilder().token(BOT_API_TOKEN).concurrent_updates(True).build()
+IS_SERVER = config_file["is_server"]
 
 async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     query = update.callback_query
     await query.answer()
 
-    if user_id not in user_info:
+    if IS_SERVER and user_id not in user_info:
         if query.data == "yes":
             await send_user_request(update.effective_user, context.bot)
         elif query.data == "no":
             pass
         else:
             await start(update, context)
-
         return
 
     if not await check_authentication(update, context):

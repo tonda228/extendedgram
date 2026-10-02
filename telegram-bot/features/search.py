@@ -13,10 +13,11 @@ from database.messages import store_unsaved_messages, get_best_public_messages, 
 from bot.commands.menu import menu
 from llm.embeddings import create_embedding
 from utils.helpers import get_edit_message_text_func, get_message_info
+from utils.config import config_file
 from utils.state import user_info
 from utils.check_authentication import check_authentication
 
-PAGE_SIZE = int(os.environ["PAGE_SIZE"])
+PAGE_SIZE = config_file["page_size"]
 
 async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None, edit=False) -> None:
     if not await check_authentication(update, context):

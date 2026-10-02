@@ -9,13 +9,15 @@ from database import cur, connection
 from database.dialogs import get_allowed_dialogs, get_all_dialogs, store_dialog
 from features.preloading import reset_idle_timer
 from settings import settings
+from utils.config import config_file
 from utils.state import user_info
 from utils.helpers import get_full_chat_name, get_topic_id
 
-PAGE_SIZE = 6
+PAGE_SIZE = config_file["page_size"]
 
 async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
     user_id = update.effective_user.id
+    app_user = user_info[user_id]
     reset_idle_timer(user_id)
 
     if user_info[user_id].allow_all:
@@ -45,8 +47,8 @@ async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_
     msg = await context.bot.send_message(chat_id=update.effective_chat.id,
                                         text="Do you wish to change your choice?",
                                         reply_markup=InlineKeyboardMarkup(keyboard))
-    user_info[user_id].message_id = msg.id
-    user_info[user_id].status = UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION
+    app_user.message_id = msg.id
+    app_user.status = UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION
 
 async def display_new_allowed_dialogs_options(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
     user_id = update.effective_user.id

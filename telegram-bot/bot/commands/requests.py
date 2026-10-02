@@ -5,13 +5,16 @@ from bot.commands.menu import menu
 from database import cur, connection
 from utils.check_authentication import check_authentication, query_phone_number
 from utils.classes import UserState
+from utils.config import config_file
 from utils.helpers import accept_user, reject_user
 from utils.state import user_info
 
+IS_SERVER = config_file["is_server"]
 
 async def get_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_authentication(update, context):
+    if not IS_SERVER or not await check_authentication(update, context):
         return
+
     user_id = update.effective_user.id
     app_user = user_info[user_id]
     if not app_user.is_admin:
