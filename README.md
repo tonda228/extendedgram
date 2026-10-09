@@ -1,260 +1,170 @@
-# Telegram Chat Assistant
+# ExtendedGram
 
-A self-hosted Telegram bot that helps you quickly catch up on conversations and find information inside your Telegram chats.
+**Catch up on Telegram conversations, find forgotten messages, and stay organized with AI.**
 
-The bot can:
+ExtendedGram is a Telegram assistant for people who have too many messages to read and too much information scattered across chats. It can summarize conversations, search for messages by meaning, and help you focus on the chats that matter to you—all through a Telegram bot.
 
-- Summarize unread messages from your Telegram dialogs
-- Search through messages using semantic / extended search
-- Restrict access to only the chats you explicitly allow
-- Work with private chats, groups, supergroups, channels, and forum topics
-- Optionally mark messages as read after summarizing or searching
-- Store message embeddings for semantic search
-- Run locally with Docker
+It works with private chats, groups, channels, and individual forum topics. You decide which conversations the assistant is allowed to process. **Your Telegram session is encrypted before it is stored; encryption is mandatory.**
 
-> This project uses your Telegram user session to read the chats you authorize. Keep your Telegram session string, API credentials, database credentials, and bot token private.
+> **Project status:** ExtendedGram is under active development. Availability and the exact menus may change.
 
----
+## What can you do with ExtendedGram?
 
-## Features
+### 📝 Catch up without scrolling
 
-### Unread chat summaries
+If a group has hundreds of unread messages, you can ask ExtendedGram to summarize the conversation instead of reading everything one by one.
 
-The bot can collect unread messages from allowed Telegram chats and generate a concise summary.
+The assistant groups messages into related topics and focuses on useful details such as **decisions, deadlines, questions, plans, and conclusions**, rather than repeating the entire chat.
 
-The summarization logic is designed to:
+**For example:** After missing a day of messages in a university group, you could get a summary of upcoming assignments, changes to a meeting time, and questions that still need answers.
 
-- Group related messages into topics
-- Avoid mixing unrelated conversations
-- Highlight important information, questions, decisions, plans, and conclusions
+You can adjust how much conversation history the assistant takes into account. If you prefer, you can also have messages marked as read after a summary.
 
-This makes it easier to catch up on active chats without reading every message manually.
+### 🔎 Find messages by meaning
 
----
+Telegram's ordinary search is useful when you remember a word or phrase. ExtendedGram is designed for the times when you remember **what was discussed**, but not **how it was phrased**.
 
-### Extended chat search
+For example, search for:
 
-The bot supports semantic search using embeddings.
+> What did we agree on for the trip next weekend?
 
-Instead of searching only for exact words, you can search by meaning.
+ExtendedGram can look for related conversations about dates, transport, or accommodation—even if your exact question never appeared in the chat. It also retrieves nearby messages so you can see the surrounding context.
 
-For example, a query such as:
+Search quality depends on the available message history and the AI model; relevant results are not guaranteed every time.
 
-```text
-when did we discuss the database migration?
+### 💬 Keep different conversations separate
+
+ExtendedGram supports:
+
+- Private one-to-one chats
+- Groups and supergroups
+- Channels
+- Individual forum topics inside groups
+
+Forum topics are handled separately so that, for example, a group's *Homework* topic does not get mixed up with its *Announcements* topic.
+
+### ⚙️ Control how it behaves
+
+You can personalize the assistant through its settings:
+
+- **Allowed conversations:** Let it process all available chats or only chats you select.
+- **History size:** Choose how much message history is considered.
+- **Read status:** Decide whether processed messages should be marked as read automatically.
+- **Preloading:** Configure preparation of message history for later searches.
+
+This lets you use ExtendedGram for a single busy group or across multiple conversations.
+
+## Getting started
+
+You don't need to understand databases, AI models, or servers to use the bot.
+
+1. **Open an ExtendedGram bot instance you trust.** Get the bot's Telegram link from its operator. There is no public bot link listed here yet.
+2. **Send `/start`.** Follow the instructions shown by the bot.
+3. **Connect your Telegram account.** Enter your phone number and Telegram verification code. If two-step verification is enabled, follow the additional password prompt.
+4. **Choose which chats can be processed.** Review your allowed-chat settings before using search or summaries.
+5. **Use the menu.** Choose **Summarize**, **Search**, or **Settings** depending on what you need.
+
+**Example workflow:** Open the bot after a busy day → select your class group → request a summary → search for “when is the project due?” if you need a specific detail.
+
+> **Important:** Connecting an account creates a Telegram user session, which can access Telegram on your behalf. Only log in through an instance whose operator you trust. Never send login codes or passwords to people in direct messages.
+
+## 🔐 Privacy and security
+
+ExtendedGram needs to read messages from conversations you authorize. It also needs to remember your Telegram login so that you aren't asked to sign in every time you search or request a summary.
+
+### Why is a Telegram session stored?
+
+A **session** is a digital login credential. Once you've connected your account, it lets the application talk to Telegram for you. Without a stored session, you'd need to complete the login process again and again.
+
+Because a session is sensitive, **ExtendedGram encrypts Telegram sessions before storing them. This protection is mandatory, not an optional setting.**
+
+### What protects the stored session?
+
+- **Encryption:** ExtendedGram uses **AES-256-GCM** to turn the stored session into unreadable encrypted data. This also helps detect unauthorized changes to that data.
+- **Password-derived protection:** It uses **PBKDF2-HMAC-SHA256**, with **600,000 iterations** and a random salt, to derive an encryption key. This makes password guessing more expensive.
+- **Fresh random values:** Encryption uses randomized values so the same original text does not always produce identical encrypted output.
+- **Encoding for storage:** The encrypted result is converted to a text-friendly representation using Base64. **Encoding is not encryption**; AES-GCM is what protects the contents.
+
+**What does this mean in practice?** Someone who obtains only the encrypted session from the database should not be able to use it without the information required to decrypt it. This is an important safeguard, but it isn't a guarantee against every kind of account compromise.
+
+### Does this mean nobody else can access my messages?
+
+No. ExtendedGram must use the session while it is running in order to read the conversations you permit. The application operator's security practices are important, even when stored sessions are encrypted.
+
+You can **limit which chats are processed**. This is different from limiting what access a Telegram user session technically has, so you should still use only instances you trust.
+
+### Where does AI processing happen?
+
+ExtendedGram can use AI models running on a local computer or a connected/shared computing host. The messages needed for a request may be sent to the host performing the processing.
+
+If you join a group that shares computing resources, **use a host you trust**. Local AI processing can reduce reliance on external AI services, but does not by itself guarantee that messages are private from a host operator. The application may also store messages and their AI-generated representations to enable later searches.
+
+### A few safety tips
+
+- Use only an ExtendedGram instance operated by someone you trust.
+- Select only the conversations you want the assistant to process.
+- Think carefully before using shared AI hosts for sensitive conversations.
+- Treat any unexpected request for Telegram credentials as suspicious.
+
+## How ExtendedGram works
+
+*This section is for curious users and developers. You can use the bot without understanding it.*
+
+### Architecture diagram
+
+```mermaid
+flowchart TD
+    U[You in Telegram] --> B[ExtendedGram bot]
+    B <--> T[Telegram client / Telethon]
+    T <--> TG[Telegram chats and messages]
+    B <--> DB[(PostgreSQL + pgvector)]
+    B <--> S[FastAPI coordinator]
+    S <-->|WebSocket requests and results| H[Connected AI host]
+    H --> L[Language model: summaries]
+    H --> E[Embedding model: semantic search]
+    L --> H
+    E --> H
 ```
 
-can match messages related to PostgreSQL migrations even if those exact words were not used.
+The diagram is simplified: it shows the key components and how they cooperate, not every internal request or database operation.
 
-The project stores message embeddings in PostgreSQL using `pgvector` and ranks results by vector similarity.
+### When you ask for a summary
 
----
+1. The Telegram client retrieves messages from the selected conversation.
+2. ExtendedGram prepares the conversation and organizes it for AI processing.
+3. An AI language model identifies related topics and produces a compact summary.
+4. The bot sends the summary back to you in Telegram.
 
-### Allowed chats
+### When you search for something
 
-The bot does not need to search every Telegram dialog.
+1. ExtendedGram converts your question into a numerical representation of its meaning (an **embedding**).
+2. It compares that representation with stored message embeddings to find related messages.
+3. It retrieves surrounding messages when available, so a result isn't shown without context.
+4. It returns the relevant messages through the bot.
 
-You can configure which dialogs are allowed.
+### Why are there separate AI hosts?
 
-Depending on your settings, the bot can:
+Running AI models can require a powerful computer. ExtendedGram separates the bot from that heavy processing, so a connected **host** can handle AI requests and return the results.
 
-- Allow all dialogs
-- Restrict access to selected dialogs
-- Treat forum topics separately
-- Search or summarize only chats that are enabled for the current user
+A FastAPI backend coordinates work with hosts over WebSockets. Depending on the setup, a user can use their own host or participate in a group where computing resources are shared. **Sharing compute also means trusting the host with the content sent for processing.**
 
----
+### Technology behind the project
 
-### Telegram forum topics
+| Purpose | Technology |
+| --- | --- |
+| Telegram account access | Telethon |
+| Bot interface | python-telegram-bot |
+| Application language | Python |
+| Coordination and communication | FastAPI and WebSockets |
+| Message storage | PostgreSQL |
+| Meaning-based search | pgvector and embedding models |
+| Summarization | Large language models through OpenAI-compatible APIs |
+| Containerization | Docker |
 
-Forum-enabled supergroups are handled per topic.
+## Project status
 
-This means that separate topics inside the same Telegram supergroup are represented independently instead of being treated as one large conversation.
+**Under active development.** ExtendedGram is a personal software engineering project exploring practical uses of language models, semantic search, Telegram automation, and distributed AI processing. Features and user experience may change.
 
----
+## Author
 
-### Optional read status changes
-
-The bot can optionally mark messages as read after:
-
-- Summarization
-- Search
-
-This behavior can be controlled through user settings.
-
----
-
-## Technology stack
-
-The project uses:
-
-- Python
-- Telethon
-- python-telegram-bot
-- PostgreSQL
-- pgvector
-- psycopg 3
-- OpenAI-compatible chat completion API
-- OpenAI-compatible embeddings API
-- Docker
-- Docker Compose
-
-The LLM and embedding models can be hosted locally as long as they expose an OpenAI-compatible API.
-
----
-
-
-# Requirements
-
-Before starting, install:
-
-- Docker
-- Docker Compose
-
-You will also need:
-
-- A Telegram account
-- Telegram API credentials
-- A Telegram bot token
-- PostgreSQL with `pgvector`
-- A chat-completion model
-- An embedding model
-
----
-
-# Telegram credentials
-
-## 1. Create Telegram API credentials
-
-Create a Telegram application and obtain:
-
-```text
-API_ID
-API_HASH
-```
-
-These credentials are used by Telethon.
-
-More information you can find here:
-https://core.telegram.org/api/obtaining_api_id
-
----
-
-## 2. Create a Telegram bot
-
-Create a bot using BotFather and obtain:
-
-```text
-BOT_TOKEN
-```
-
-The bot is the interface used to interact with the assistant.
-
-Instructions can be found here:
-https://core.telegram.org/bots/tutorial#getting-ready
-
----
-
-# Environment variables
-
-Create a `.env` file in the project root.
-
-Example:
-
-```env
-# Telegram
-API_ID=your_api_id
-API_HASH=your_api_hash
-BOT_TOKEN=your_bot_token
-
-# PostgreSQL
-# Values of those variables you can change to whatever you want
-DB_PASSWORD=your_password
-DB_USER=your_user
-DB_NAME=your_db_name
-# Don't change DB_HOST
-DB_HOST=db
-
-# LLM
-OPEN_AI_URL=http://model-runner.docker.internal/engines/v1/
-COMPLETIONS_MODEL=docker.io/ai/qwen3-vl:8B
-EMBEDDING_MODEL=ai/qwen3-embedding:0.6b
-
-# Pagers
-# Choose how many dialgos can be displayed at once
-PAGE_SIZE=6
-```
-
-Add any additional variables required by your project.
-
-Do not commit `.env` to Git.
-
----
-
-# Running with Docker
-
-The commands below assume your Docker Compose service containing the Telegram bot is named:
-
-```text
-bot
-```
-
-and that you run the commands from the directory containing `compose.yaml` or `docker-compose.yml`.
-
----
-
-# First-time administrator authentication
-
-Before using the bot, authenticate the Telegram account that will be used as the administrator.
-
-Run:
-
-```bash
-docker compose build
-
-docker compose up db -d
-
-docker compose run --rm bot python telegram-bot/add_admin.py
-
-docker compse up bot
-```
-
-The script should ask for:
-
-```text
-Enter your phone number:
-```
-
-Then Telegram will send you a login code.
-
-Enter the code when requested.
-
-If your Telegram account uses two-factor authentication, the script should also request your Telegram password.
-
-Example flow:
-
-```text
-Enter your phone number: +420123456789
-Enter the code you received: 12345
-# And optionally
-Enter your password: ********
-```
-
-After successful authentication, the Telethon session is saved to the database.
-
-The `--rm` option automatically removes the temporary container after the script exits.
-
----
-
-# Later
-
-Just run
-
-```bash
-docker compose up -d
-```
-
-Or use GUI to start containers
-If your PostgreSQL service has another name, replace `db` with that service name.
-
----
+Created by [Anton Chebotarov](https://github.com/tonda228).
