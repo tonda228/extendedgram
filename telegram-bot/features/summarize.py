@@ -1,6 +1,5 @@
 import html
-import json
-import telegram
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telethon import functions
@@ -16,14 +15,15 @@ from features.preloading import reset_idle_timer
 from utils.config import config_file
 from utils.state import user_info
 from utils.check_authentication import check_authentication
-from utils.helpers import get_message_info, get_edit_message_text_func
+from utils.helpers import get_message_info, send_message
 
 PAGE_SIZE = config_file["page_size"]
 
-async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None, edit=False):
-    if not await check_authentication(update, context):
+async def summarize_request(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id=None, query=None, edit=False):
+    if user_id is None:
+        user_id = update.effective_user.id
+    if not await check_authentication(user_id):
         return
-    user_id = update.effective_user.id
     app_user = user_info[user_id]
     reset_idle_timer(user_id)
 
@@ -31,9 +31,8 @@ async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         app_user.allowed_dialogs = None
         allowed_dialogs = await get_allowed_dialogs(user_id)
         if len(allowed_dialogs) == 0:
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                           text="No dialog is allowed. You can change it in settings")
-            await menu(update, context)
+            await send_message(user_id, text="No dialog is allowed. You can change it in settings")
+            await menu(user_id=user_id)
             return
         unread_dialogs = [dialog for dialog in allowed_dialogs if get_unread_count(dialog) > 0]
         unread_dialogs.sort(key=lambda dialog: get_unread_count(dialog), reverse=True)
@@ -56,9 +55,8 @@ async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         keyboard.append([InlineKeyboardButton(text=dialog_text, callback_data=str(index))])
 
     if len(unread_dialogs) == 0:
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text="All dialogs are read. Come back later.")
-        await menu(update, context)
+        await send_message(user_id, text="All dialogs are read. Come back later.")
+        await menu(user_id=user_id)
         return
 
     if len(unread_dialogs) > PAGE_SIZE:
@@ -67,35 +65,22 @@ async def summarize_request(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     keyboard.append([InlineKeyboardButton(text="Back", callback_data="back")])
     markup = InlineKeyboardMarkup(keyboard)
 
-    if edit:
-        sender_func = get_edit_message_text_func(query.message.message_id, context)
-    else:
-        sender_func = context.bot.send_message
-    try:
-        msg = await sender_func(chat_id=update.effective_chat.id, text="Choose which chat you want to summarize.", reply_markup=markup)
-        user_info[user_id].status = UserState.WAIT_FOR_SUMMARIZE_CHAT
-        user_info[user_id].message_id = msg.id
-    except telegram.error.BadRequest as e:
-        print(e)
-    user_info[user_id].dialogs = unread_dialogs
+    await send_message(user_id, "Choose which chat you want to summarize.", reply_markup=markup, edit=edit)
+    app_user.status = UserState.WAIT_FOR_SUMMARIZE_CHAT
+    app_user.dialogs = unread_dialogs
 
-async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
-    if not update.effective_user:
-        return
-
-    text = query.data
-    user_id = update.effective_user.id
+async def process_summarize_query(user_id, query):
     app_user = user_info[user_id]
-    client = user_info[user_id].client
-    unread_dialogs = user_info[user_id].dialogs
-    dialog_id = text.split()[0]
+    client = app_user.client
+    unread_dialogs = app_user.dialogs
+    dialog_id = query.data
     try:
         dialog_id = int(dialog_id)
     except ValueError:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid argument. Try again.")
+        await send_message(user_id, text="Invalid argument. Try again.")
         return
     if dialog_id < 0 or dialog_id >= len(unread_dialogs):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Your choice is out of range. Try again.")
+        await send_message(user_id, text="Your choice is out of range. Try again.")
         return
 
     chosen_dialog = unread_dialogs[dialog_id]
@@ -185,17 +170,25 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
 
 
     if app_user.set_read_after_summary:
-        await app_user.client.send_read_acknowledge(chosen_dialog[0], clear_mentions=True, clear_reactions=True)
-        await menu(update, context)
+        if chosen_dialog[1] is None:
+            await app_user.client.send_read_acknowledge(chosen_dialog[0], clear_mentions=True, clear_reactions=True)
+        else:
+            await app_user.client(
+                functions.messages.ReadDiscussionRequest(
+                    peer=chosen_dialog[0].entity,
+                    msg_id=chosen_dialog[1].id,
+                    read_max_id=chosen_dialog[1].top_message
+                )
+            )
+        await menu(user_id=user_id)
         return
+
     keyboard = [
         [
             InlineKeyboardButton(text="Yes", callback_data="Yes"),
             InlineKeyboardButton(text="No", callback_data="No")
         ]
     ]
-
-    msg = await query.message.reply_text(text="Mark chat as read?", reply_markup=InlineKeyboardMarkup(keyboard))
-    user_info[user_id].message_id = msg.id
-    user_info[user_id].status = UserState.WAIT_FOR_READ
-    user_info[user_id].last_read = chosen_dialog
+    await send_message(user_id, "Mark chat as read?", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    app_user.status = UserState.WAIT_FOR_READ
+    app_user.last_read = chosen_dialog

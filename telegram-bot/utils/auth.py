@@ -18,15 +18,14 @@ def validate_phone_number(number: str) -> bool:
             and 8 <= len(number) <= 16
     )
 
-async def process_phone_number(update: Update, context, number):
-    user_id = update.effective_user.id
+async def process_phone_number(user_id, number):
     client = user_info[user_id].client
 
     await client.connect()
     try:
         result = await client.send_code_request(number)
     except (TypeError, PhoneNumberInvalidError):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid phone number try again.")
+        await send_message(chat_id=user_id, text="Invalid phone number try again.")
         return
     user_info[user_id].phone_code_hash = result.phone_code_hash
 
@@ -60,41 +59,31 @@ async def process_code(update: Update, context: ContextTypes.DEFAULT_TYPE, code:
     except SessionPasswordNeededError:
         app_user.status = UserState.WAIT_FOR_PASSWORD
         text = "Two-steps verification is enabled and a password is required:"
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+        await send_message(chat_id=user_id, text=text)
     except PhoneCodeExpiredError:
-        text = "You might have forgot to separate your code with whitespaces. Try again with new code."
+        text = "Try to separate your code with whitespaces. Try again with new code."
         result = await client.send_code_request(number)
         user_info[user_id].phone_code_hash = result.phone_code_hash
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+        await send_message(chat_id=user_id, text=text)
     else:
-        await successful_login(update, context)
+        await successful_login(user_id)
 
-async def process_password(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    user_id = update.effective_user.id
+async def process_password(user_id, text: str) -> None:
     client = user_info[user_id].client
 
     try:
         await client.sign_in(password=text)
     except PasswordHashInvalidError:
         text = "Incorrect password. Try again:"
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+        await send_message(chat_id=user_id, text=text)
     else:
-        await successful_login(update, context)
 
-async def successful_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    client = user_info[user_id].client
+async def successful_login(user_id):
+    app_user = user_info[user_id]
+    app_user.status = UserState.AUTHENTICATED
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Successfully signed in.")
-
-    # make separate function for this
-    store_app_user(user_id, client)
-    delete_user_request(user_id)
-    user_info[user_id].status = UserState.AUTHENTICATED
-    user_preloading[user_id] = AppUserPreloading()
-    reset_idle_timer(user_id)
-
-    await menu(update, context)
+    await send_message(chat_id=user_id, text="Successfully signed in.")
+    await menu(user_id=user_id)
 
 # async def process_qr_code(update: Update, context):
 #     user_id = update.effective_user.id

@@ -1,11 +1,40 @@
+import asyncio
 import math
 import os
 
+import telegram.error
+
+from bot import application
+from utils.state import user_info
+
+
+async def send_message(chat_id, text, reply_markup=None, parse_mode=None, disable_web_page_preview=False, edit=False):
+    app_user = user_info[chat_id]
+    if edit and app_user.last_message is not None:
+        sender_func = get_edit_message_text_func(app_user.last_message.message_id)
+    else:
+        sender_func = application.bot.send_message
+
+    retries_left = 5
+    while True:
+        try:
+            new_message = await sender_func(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=disable_web_page_preview)
+            app_user.last_message = new_message if app_user else None
+            return new_message
+        except telegram.error.BadRequest:
+            return None
+        except telegram.error.NetworkError as e:
+            retries_left -= 1
+            await asyncio.sleep((5 - retries_left))
+            if retries_left == 0:
+                print("Couldnt send the message")
+                return None
+
 async def accept_user(user_id, bot):
-    await bot.send_message(chat_id=user_id, text="Your request have been accepted.")
+    await send_message(chat_id=user_id, text="Your request have been accepted.")
 
 async def reject_user(user_id, bot):
-    await bot.send_message(chat_id=user_id, text="Your request have been rejected. If you think that's a mistake you can resend your request.")
+    await send_message(chat_id=user_id, text="Your request have been rejected. If you think that's a mistake you can resend your request.")
 
 def get_db_topic_id(dialog):
     return dialog.topic_id or 0
@@ -13,11 +42,13 @@ def get_db_topic_id(dialog):
 def get_topic_id(dialog):
     return dialog[1].id if dialog[1] else 0
 
-def get_edit_message_text_func(message_id, context=None, bot=None):
-    if bot is None:
-        bot = context.bot
-    async def func(chat_id, text, reply_markup):
-        return await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
+def get_edit_message_text_func(message_id):
+    async def func(chat_id, text, reply_markup=None, parse_mode=None, disable_web_page_preview=False):
+        return await application.bot.edit_message_text(chat_id=chat_id,
+                                                       message_id=message_id,
+                                                       text=text, reply_markup=reply_markup,
+                                                       parse_mode=parse_mode,
+                                                       disable_web_page_preview=disable_web_page_preview)
     return func
 
 def get_user_name(user):

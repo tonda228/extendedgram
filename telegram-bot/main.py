@@ -1,8 +1,8 @@
 import asyncio
 from telegram.ext import filters, CommandHandler, MessageHandler, CallbackQueryHandler
 
-from bot import application, process_button, process_message
-from bot.commands.requests import get_requests
+from bot import application
+from bot.command_handlers import process_button, process_message
 from bot.commands.shut_down import shut_down
 from database import initialize_db
 from bot.commands.start import start

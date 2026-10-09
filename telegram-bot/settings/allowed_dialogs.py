@@ -1,7 +1,6 @@
 from html import escape
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telethon.tl.types import User, Chat, Channel
 
 from utils.classes import UserState
@@ -11,24 +10,23 @@ from features.preloading import reset_idle_timer
 from settings import settings
 from utils.config import config_file
 from utils.state import user_info
-from utils.helpers import get_full_chat_name, get_topic_id
+from utils.helpers import get_full_chat_name, get_topic_id, send_message
 
 PAGE_SIZE = config_file["page_size"]
 
-async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
-    user_id = update.effective_user.id
+async def display_allowed_dialogs(user_id):
     app_user = user_info[user_id]
     reset_idle_timer(user_id)
 
     if user_info[user_id].allow_all:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"All dialogs are allowed.")
+        await send_message(chat_id=user_id, text=f"All dialogs are allowed.")
     else:
         allowed_dialogs = await get_allowed_dialogs(user_id)
         order_by = (lambda x: get_full_chat_name(x)) if app_user.order_by == "title" else None
         if order_by:
             allowed_dialogs.sort(key=order_by)
         if len(allowed_dialogs) == 0:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"No dialogs are allowed.")
+            await send_message(chat_id=user_id, text=f"No dialogs are allowed.")
         else:
             text = ""
             add_new_line = False
@@ -37,9 +35,7 @@ async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_
                     text += "\n"
                 text += f"<b> {index}) {escape(get_full_chat_name(dialog))} </b>"
                 add_new_line = True
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                           text=text,
-                                           parse_mode="HTML")
+            await send_message(chat_id=user_id, text=text, parse_mode="HTML")
 
     keyboard = [
         [
@@ -47,14 +43,11 @@ async def display_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_
             InlineKeyboardButton(text="No", callback_data="No")
         ]
     ]
-    msg = await context.bot.send_message(chat_id=update.effective_chat.id,
-                                        text="Do you wish to change your choice?",
-                                        reply_markup=InlineKeyboardMarkup(keyboard))
+    msg = await send_message(user_id, "Do you wish to change your choice?", reply_markup=InlineKeyboardMarkup(keyboard))
     app_user.message_id = msg.id
     app_user.status = UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION
 
-async def display_new_allowed_dialogs_options(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
-    user_id = update.effective_user.id
+async def display_new_allowed_dialogs_options(user_id, query):
     app_user = user_info[user_id]
     options = app_user.allowed_dialogs_options if app_user.allowed_dialogs_options is not None else set()
     keyboard = [
@@ -66,22 +59,19 @@ async def display_new_allowed_dialogs_options(update: Update, context: ContextTy
         [InlineKeyboardButton(text="Confirm", callback_data="confirm")],
         [InlineKeyboardButton(text="Back", callback_data="back")]
     ]
-    msg = await context.bot.edit_message_text(chat_id=update.effective_chat.id,
-                                        message_id=query.message.message_id,
-                                        text="Choose which dialogs you want to allow.\n"
-                                             "Note: Previously manually allowed dialogs will stay that way if you don't unchoose them.\n",
-                                        reply_markup=InlineKeyboardMarkup(keyboard))
-    app_user.message_id = msg.id
+    await send_message(user_id,
+                       "Choose which dialogs you want to allow.\nNote: Previously manually allowed dialogs will stay that way if you don't unchoose them.\n",
+                       reply_markup=InlineKeyboardMarkup(keyboard),
+                       edit=True)
     app_user.status = UserState.WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE
     app_user.allowed_dialogs_options = set() if app_user.allowed_dialogs_options is None else app_user.allowed_dialogs_options
 
-async def query_new_allowed_dialogs_categories(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
-    user_id = update.effective_user.id
+async def query_new_allowed_dialogs_categories(user_id, query):
     app_user = user_info[user_id]
     all_dialogs = await get_all_dialogs(user_id)
     allowed_dialogs_set = app_user.allowed_dialogs_set if app_user.allowed_dialogs_set is not None else set()
     if {"choose", "channels", "chats", "users", "bots"}.issubset(app_user.allowed_dialogs_options):
-        await change_allowed_dialogs(update, context)
+        await change_allowed_dialogs(user_id)
         return
 
     initial_time = False
@@ -93,7 +83,7 @@ async def query_new_allowed_dialogs_categories(update: Update, context: ContextT
     reset_idle_timer(user_id)
 
     if "choose" not in app_user.allowed_dialogs_options:
-        await change_allowed_dialogs(update, context)
+        await change_allowed_dialogs(user_id)
         return
 
     given_dialogs = []
@@ -134,21 +124,15 @@ async def query_new_allowed_dialogs_categories(update: Update, context: ContextT
     keyboard += [[InlineKeyboardButton(text="Confirm", callback_data="confirm")],
                 [InlineKeyboardButton(text="Back", callback_data="back")]]
 
-    msg = await context.bot.edit_message_text(chat_id=update.effective_chat.id,
-                                              message_id=query.message.message_id,
-                                              text="From which categories you want to select?",
-                                              reply_markup=InlineKeyboardMarkup(keyboard))
-
+    await send_message(chat_id=user_id, text="From which categories you want to select?", reply_markup=InlineKeyboardMarkup(keyboard))
     app_user.status = UserState.WAIT_FOR_ALLOWED_DIALOGS_CATEGORY_CHOICE
-    app_user.message_id = msg.id
     app_user.dialogs = given_dialogs
     app_user.chosen_ids = ids
     app_user.allowed_dialogs_set = allowed_dialogs_set
     app_user.cur_page = 0
 
 
-async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE, query, ):
-    user_id = update.effective_user.id
+async def query_new_allowed_dialogs(user_id, query, ):
     app_user = user_info[user_id]
 
     all_dialogs = app_user.dialogs
@@ -198,11 +182,7 @@ async def query_new_allowed_dialogs(update: Update, context: ContextTypes.DEFAUL
                       InlineKeyboardButton(text="Next ▶️", callback_data="next")]]
     keyboard += [[InlineKeyboardButton(text="Confirm", callback_data="confirm")]]
 
-    msg = await context.bot.edit_message_text(chat_id=update.effective_chat.id,
-                                              message_id=query.message.message_id,
-                                              text="Choose which dialogs you want to allow.",
-                                              reply_markup=InlineKeyboardMarkup(keyboard))
-    app_user.message_id = msg.id
+    await send_message(chat_id=user_id, text="Choose which dialogs you want to allow.", reply_markup=InlineKeyboardMarkup(keyboard))
     app_user.status = UserState.WAIT_FOR_ALLOWED_DIALOGS_MANUAL_CHOICE
     app_user.last_category = category
     app_user.category_dialogs_count = dialog_id
@@ -223,8 +203,7 @@ def is_suitable(dialog, options):
         return True
     return False
 
-async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def change_allowed_dialogs(user_id):
     app_user = user_info[user_id]
     given_dialogs = app_user.dialogs or []
     all_dialogs = await get_all_dialogs(user_id)
@@ -257,7 +236,7 @@ async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_T
                 store_dialog(dialog, user_id, False)
                 app_user.allowed_dialogs_set.discard((dialog[0].id, get_topic_id(dialog)))
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Changes have been saved.")
+    await send_message(chat_id=user_id, text="Changes have been saved.")
 
     reset_idle_timer(user_id)
 
@@ -273,4 +252,4 @@ async def change_allowed_dialogs(update: Update, context: ContextTypes.DEFAULT_T
         """, (user_id,))
 
     connection.commit()
-    await settings(update, context)
+    await settings(user_id=user_id)

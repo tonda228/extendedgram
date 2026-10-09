@@ -1,6 +1,6 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from bot import application
 from utils.state import user_info
 
 
@@ -29,11 +29,11 @@ def update_inline_keyboard(keyboard, data, new_state=None, save_to=None):
             copy[i].append(update_inline_button(button, data, new_state, save_to))
     return InlineKeyboardMarkup(copy)
 
-async def send_updated_inline_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE, query, new_state=None, save_to=None):
+async def send_updated_inline_keyboard(user_id, query, new_state=None, save_to=None):
     keyboard = query.message.reply_markup.inline_keyboard
     new_markup = update_inline_keyboard(keyboard, query.data, new_state=new_state, save_to=save_to)
 
-    msg = await context.bot.edit_message_reply_markup(chat_id=update.effective_chat.id,
+    msg = await application.bot.edit_message_reply_markup(chat_id=user_id,
                                                 message_id=query.message.message_id,
                                                 reply_markup=new_markup)
-    user_info[update.effective_user.id].message_id = msg.id
+    user_info[user_id].message_id = msg.id

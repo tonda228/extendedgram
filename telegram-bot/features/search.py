@@ -1,6 +1,5 @@
-import os
-
 import telegram
+from pgvector import Vector
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telethon.tl.types import User, Channel
@@ -14,17 +13,18 @@ from database.messages import store_unsaved_messages, get_best_public_messages, 
 from bot.commands.menu import menu
 from llm.embeddings import create_embedding
 from utils.config import config_file
-from utils.helpers import get_edit_message_text_func, get_message_info, get_full_chat_name, resend_processing_status
+from utils.helpers import get_message_info, get_full_chat_name, resend_processing_status, \
+    send_message
 from utils.state import user_info
 from utils.check_authentication import check_authentication
 
 PAGE_SIZE = config_file["page_size"]
 
-async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None, edit=False) -> None:
-    if not await check_authentication(update, context):
+async def search_request(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id=None, edit=False) -> None:
+    if user_id is None:
+        user_id = update.effective_user.id
+    if not await check_authentication(user_id):
         return
-
-    user_id = update.effective_user.id
     app_user = user_info[user_id]
 
     reset_idle_timer(user_id)
@@ -37,9 +37,8 @@ async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE, que
     dialogs = app_user.dialogs
 
     if len(dialogs) == 0:
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text="There are no dialogs or none are allowed.")
-        await menu(update, context)
+        await send_message(chat_id=user_id, text="There are no dialogs or none are allowed.")
+        await menu(user_id=user_id)
         return
 
     cur_page = app_user.cur_page
@@ -65,23 +64,12 @@ async def search_request(update: Update, context: ContextTypes.DEFAULT_TYPE, que
     keyboard.append([InlineKeyboardButton(text="Back", callback_data="back")])
     markup = InlineKeyboardMarkup(keyboard)
 
-    if edit:
-        sender_func = get_edit_message_text_func(query.message.message_id, context)
-    else:
-        sender_func = context.bot.send_message
-    try:
-        msg = await sender_func(chat_id=update.effective_chat.id,
-                                    text="Choose in which chats you want to search.",
-                                    reply_markup=markup)
-        app_user.status = UserState.WAIT_FOR_SEARCH_CHAT
-        user_info[user_id].message_id = msg.id
-    except telegram.error.BadRequest as e:
-        print(e)
-
+    await send_message(user_id, "Choose in which chats you want to search.", reply_markup=markup, edit=edit)
+    app_user.status = UserState.WAIT_FOR_SEARCH_CHAT
     app_user.dialogs = dialogs
 
-async def process_search_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+async def process_search_chat(user_id) -> None:
+    user_id = user_id
     reset_idle_timer(user_id)
 
     given_dialogs = user_info[user_id].dialogs
@@ -93,13 +81,13 @@ async def process_search_chat(update: Update, context: ContextTypes.DEFAULT_TYPE
     delete_old_dialog_priorities(user_id)
 
     markup = InlineKeyboardMarkup([[InlineKeyboardButton(text="Back", callback_data="back")]])
-    msg = await context.bot.send_message(chat_id=update.effective_chat.id, text="Enter your query bellow:", reply_markup=markup)
-    user_info[user_id].message_id = msg.id
+    await send_message(chat_id=user_id, text="Enter your query bellow:", reply_markup=markup)
     user_info[user_id].status = UserState.WAIT_FOR_SEARCH_TEXT
     user_info[user_id].dialogs = queried_dialogs
 
-async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    user_id = update.effective_user.id
+async def process_search_text(user_id, text: str):
+    user_id = user_id
+    app_user = user_info[user_id]
     client = user_info[user_id].client
     queried_dialogs = user_info[user_id].dialogs
     embedding = await create_embedding(text)
@@ -118,26 +106,18 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             best_messages += get_best_private_messages(user_id, dialog, Vector(embedding))
         cur_status += 1
-        await resend_processing_status(user_id, context.bot, message2, cur_status, len(queried_dialogs))
+        await resend_processing_status(user_id, message2, cur_status, len(queried_dialogs))
 
-    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message1.message_id,
-                                   text="Download is completed.")
-    await context.bot.delete_message(user_id, message2.id)
+    await application.bot.delete_message(user_id, message2.id)
     reset_idle_timer(user_id)
 
     data = []
     for message in best_messages:
         get_message_info(data, message)
 
-    message_text = "Give short answer on the following question: " + text
-    message = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
-    result = await send_data(update, context, data, message_text, message, True, 5, 0, len(data))
-    # response = await llm_client.chat.completions.create(
-    #     model=os.environ["COMPLETIONS_MODEL"],
-    #     messages=request_data)
-    if len(result) > 1:
-        message_text = "Use those sentences to give an answer on the following question: " + text
-        result = await send_data(update, context, data, message_text)
+    result = await send_request(user_id, data, "search", text)
+    if result is None:
+        result="There are no available hosts or hosts malfunctioning."
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=result[0], parse_mode="Markdown")
-    await menu(update, context)
+    await send_message(chat_id=user_id, text=result)
+    await menu(user_id=user_id)
