@@ -107,14 +107,13 @@ def get_request_data(data, message_text):
     ]
     return request_data
 
-async def resend_processing_status(user_id, bot, message, cur_status, msg_count):
-    processed = int(cur_status / msg_count * 100)
-    download_bar = "|" + "█" * processed + ' ' * (100 - processed) + "| " + str(processed) + "%"
-    try:
-        await bot.edit_message_text(chat_id=user_id, message_id=message.id, text=download_bar)
-    except Exception as e:
-        print(e)
-        pass
+async def resend_processing_status(user_id, message, cur_status, msg_count):
+    processed = int(cur_status / msg_count * 40)
+    download_bar = "█" * processed + '░' * (40 - processed) + " " + str(processed) + "%"
+
+    if download_bar == message.text:
+        return
+    await send_message(user_id, text=download_bar, edit=True)
 
 def prev_page(app_user, length):
     pages_count = math.ceil(length / int(os.environ["PAGE_SIZE"]))

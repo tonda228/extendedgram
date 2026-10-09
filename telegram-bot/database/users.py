@@ -1,5 +1,6 @@
 from utils.helpers import get_user_name
-from utils.state import user_info
+from utils.security import encrypt_string
+from utils.state import user_info, uninitialized_users
 from . import cur, connection
 
 
@@ -20,7 +21,10 @@ def update_ordering(user_id: int, order_by: str):
     """, (order_by, user_id))
     connection.commit()
 
-def store_app_user(user_id: int, client):
+def store_app_user(user_id: int, client, is_host=False, password_hash=None, password=None):
+    session = client.session.save()
+    if password:
+        session = encrypt_string(session, password)
     cur.execute("""
     INSERT INTO app_user (user_id,
                           string_session,
@@ -28,15 +32,16 @@ def store_app_user(user_id: int, client):
                           allow_all,
                           preloading,
                           history_size, 
-                          is_admin)
-    VALUES (%s, %s, FALSE, TRUE, FALSE, 100, FALSE) ON CONFLICT (user_id) DO UPDATE
+                          is_host,
+                          password_hash)
+    VALUES (%s, %s, FALSE, TRUE, FALSE, 100, %s, %s) ON CONFLICT (user_id) DO UPDATE
     SET string_session = EXCLUDED.string_session,
         set_read_after_summary = EXCLUDED.set_read_after_summary,
         allow_all = EXCLUDED.allow_all,
-        preloading = EXCLUDED.allow_all,
+        preloading = EXCLUDED.preloading,
         history_size = EXCLUDED.history_size, 
-        is_admin = EXCLUDED.is_admin
-    """, (user_id, client.session.save()))
+        is_host = EXCLUDED.is_host
+    """, (user_id, session, is_host, password_hash))
     connection.commit()
 
 def flip_user_state(user_id: int, column: str):
@@ -63,7 +68,7 @@ async def send_user_request(user, bot):
     """, (user.id,))
     connection.commit()
 
-    await bot.send_message(chat_id=user.id, text="Your request has been successfully sent.")
+    await send_message(chat_id=user.id, text="Your request has been successfully sent.")
 
 def delete_user_request(user_id):
     cur.execute("""

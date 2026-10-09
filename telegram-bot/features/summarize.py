@@ -6,7 +6,7 @@ from telethon import functions
 from telethon.tl.types import User, Channel
 
 from bot.commands.menu import menu
-from llm.completions import send_data
+from server.requests import send_request
 from utils.classes import UserState
 from database.dialogs import get_allowed_dialogs, get_unread_count
 from database.messages import store_unsaved_messages, get_public_messages_for_summarization, \
@@ -87,14 +87,9 @@ async def process_summarize_query(user_id, query):
     data = []
     messages_count = chosen_dialog[0].unread_count if not chosen_dialog[1] else chosen_dialog[1].unread_count
 
-    message1 = await context.bot.send_message(chat_id=update.effective_chat.id,
-                                             text="Downloading required messages. It might take a few minutes.")
-    message2 = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
     reset_idle_timer(user_id, reset=False)
-    await store_unsaved_messages(user_id, chosen_dialog, client, False, context.bot,0, messages_count, message2)
-    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message1.message_id,
-                                        text="Download is completed.")
-    await context.bot.delete_message(user_id, message2.id)
+    await store_unsaved_messages(user_id, chosen_dialog, client, False, messages_count)
+
     reset_idle_timer(user_id)
 
     if isinstance(chosen_dialog[0].entity, Channel):
@@ -105,48 +100,7 @@ async def process_summarize_query(user_id, query):
     for message in messages:
         get_message_info(data, message)
 
-    response_format = """
-        [
-            {
-                "start_message_id": 123,
-                "end_message_id": 456,
-                "topic": "...",
-                "summary": "..."
-            }
-        ]
-        """
-    format_text = f"\nResponse give in json in following format:\n {response_format}"
-    message_text = ("Summarize the messages very concisely. "
-                    "For each message, you first receive the sender name and then the message. "
-                    "Group related messages into topics, but do not merge unrelated conversations. "
-                    "For each topic, include the first and last message IDs. "
-                    "Return at most 10 topics. "
-                    "Prioritize only important information, decisions, questions, plans, and conclusions. "
-                    "Ignore greetings, repetition, jokes, filler, and minor details unless they are necessary to understand the topic. "
-                    "For every 20 input messages, produce approximately 1 topic summary when possible. "
-                    "Each topic summary should normally be 1-5 sentences and no more than 150 words. "
-                    "Use a surface-level summary only: do not retell the conversation message by message. "
-                    "Do not include details that are not essential. "
-                    "If several messages repeat the same idea, mention it only once. "
-                    "Respond in the same language as the messages you received "
-                    "If the conversation is short or contains little important information, return fewer topics rather than adding detail. "
-                    "Add information about who says what if that person talks about his situation" + format_text)
-
-    message = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
-    try:
-        results = await send_data(update, context, data, message_text, message, True, 5, 0, len(data))
-    except json.decoder.JSONDecodeError:
-        return
-
-    if len(results) > 10:
-        message_text = "Combine those topics. Leave only 10 topics." + format_text
-        data = [
-            {"type": "text", "text": json.dumps(result)}
-            for result in results
-        ]
-        results = await send_data(update, context, data, message_text, for_summary=True)
-
-    await context.bot.delete_message(user_id, message.id)
+    results = await send_request(user_id, data, "summarize")
 
     for index, result in enumerate(results, start=1):
         messages = ""
@@ -164,9 +118,7 @@ async def process_summarize_query(user_id, query):
             messages = f"From {link_start} to {link_end}\n"
         topic = html.escape(str(result["topic"]))
         summary = html.escape(str(result["summary"]))
-        await query.message.reply_html(text=f"{index}) {topic}\n"
-                                             f"{messages}{summary}",
-                                        disable_web_page_preview=True)
+        await send_message(user_id, f"{index}) {topic}\n{messages}{summary}", disable_web_page_preview=True)
 
 
     if app_user.set_read_after_summary:

@@ -1,19 +1,19 @@
-import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
-from utils.helpers import get_edit_message_text_func
+from utils.helpers import send_message
 from utils.state import user_info
 from utils.check_authentication import check_authentication
 
 
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None, edit=False):
-    if not await check_authentication(update, context):
+async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id=None, edit=False):
+    if user_id is None:
+        user_id = update.effective_user.id
+    if not await check_authentication(user_id):
         return
 
-    user_id = update.effective_user.id
     reset_idle_timer(user_id)
 
     app_user = user_info[user_id]
@@ -41,14 +41,8 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE, query=Non
             InlineKeyboardButton(text="Back", callback_data="back")
         ]
     ]
+    if app_user.group_id:
+        keyboard.append([InlineKeyboardButton(text="Group information", callback_data="group_info")])
     markup = InlineKeyboardMarkup(keyboard)
-    if edit:
-        sender_func = get_edit_message_text_func(query.message.message_id, context)
-    else:
-        sender_func = context.bot.send_message
-    try:
-        msg = await sender_func(chat_id=update.effective_chat.id, text="Settings", reply_markup=markup)
-        user_info[user_id].message_id = msg.id
-    except telegram.error.BadRequest as e:
-        print(e)
+    await send_message(user_id, "Settings", reply_markup=markup, edit=edit)
     app_user.status = UserState.WAIT_FOR_SETTINGS_CHOICE

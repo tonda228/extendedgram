@@ -1,4 +1,7 @@
 import asyncio
+
+import uvicorn
+from fastapi import FastAPI
 from telegram.ext import filters, CommandHandler, MessageHandler, CallbackQueryHandler
 
 from bot import application
@@ -10,23 +13,35 @@ from bot.commands.logout import log_out_request
 from bot.commands.menu import menu
 from features.search import search_request
 from features.summarize import summarize_request
+from server.server_runner import create_api_handlers
 from settings import settings
 from utils import infinite_task
 from utils.initialize_users import initialize_users
 
-# maybe set timer before shutdown
-# encrypt sessionstring and decrypt using user-provided password
-# make solo and private version
-# fix turn off message
-# add download status indication
+app = FastAPI()
 
-async def main():
+async def run_server():
+    create_api_handlers(app)
+    config = uvicorn.Config(
+        app,
+        host="localhost",
+        port=8000,
+        log_level="info"
+    )
+    server = uvicorn.Server(config=config)
+    await server.serve()
+
+    try:
+        await infinite_task.infinite_task
+    except asyncio.CancelledError:
+        pass
+
+async def run_bot():
     await initialize_users()
     await application.initialize()
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
 
-    infinite_task.infinite_task = asyncio.create_task(infinite_task.get_infinite_task())
     try:
         await infinite_task.infinite_task
     except asyncio.CancelledError:
@@ -35,6 +50,17 @@ async def main():
     await application.updater.stop()
     await application.stop()
     await application.shutdown()
+
+async def main():
+    infinite_task.infinite_task = asyncio.create_task(infinite_task.get_infinite_task())
+    try:
+        await asyncio.gather(
+            run_bot(),
+            run_server()
+        )
+    except asyncio.CancelledError:
+        pass
+
 
 if __name__ == "__main__":
     initialize_db()

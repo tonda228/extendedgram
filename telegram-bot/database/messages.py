@@ -6,9 +6,10 @@ from telethon import TelegramClient, utils
 from telethon.tl.custom import Message, Dialog
 from telethon.tl.types import User, Channel, ForumTopic, MessageActionChatJoinedByLink
 
-from llm.completions import translate_image
-from llm.embeddings import create_message_embedding
-from utils.helpers import get_user_name, resend_processing_status
+from bot import application
+from server.requests import request_media_description, request_embedding
+from utils.classes import Request
+from utils.helpers import get_user_name, resend_processing_status, send_message
 from utils.state import user_info
 from . import cur, connection
 from .dialogs import store_dialog, get_unread_count
@@ -21,10 +22,9 @@ async def store_message(message: Message, dialog: tuple[Dialog, ForumTopic | Non
         if not os.path.exists("media"):
             os.makedirs("media")
 
-        media_description = await translate_image(message)
+        media_description = await request_media_description(user_id, message)
 
-    embedding = None if not add_embeddings else await create_message_embedding(dialog, message, user_id,
-                                                                               media_description, False)
+    embedding = None if not add_embeddings else await request_embedding(dialog, message, user_id, media_description, False)
     sender = await message.get_sender()
 
     sender_id = None
@@ -279,10 +279,7 @@ async def store_unsaved_messages(user_id: int,
                                  dialog: tuple[Dialog, ForumTopic | None],
                                  client: TelegramClient,
                                  add_embeddings = False,
-                                 bot=None,
-                                 cur_status: int|None = None,
-                                 msg_count: int|None = None,
-                                 download_message = None) -> None:
+                                 msg_count: int|None = None) -> None:
     saved_id = 0
     limit = get_unread_count(dialog) if not add_embeddings else None
     days = user_info[user_id].history_size
@@ -303,18 +300,29 @@ async def store_unsaved_messages(user_id: int,
 
     topic_id_for_search = dialog[1].id if dialog[1] else None
 
+    download_message = await send_message(chat_id=user_id, text="Downloading required messages. It might take a few minutes.")
+    state_message = None
+    if msg_count is not None:
+        state_message = await send_message(user_id, "░" * 40 + " 0%")
+
+    cur_status = 0
+
     async for message in client.iter_messages(dialog[0], reply_to=topic_id_for_search, limit=limit):
         if message.id <= last_id or message.date <= dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=days):
             break
 
         if saved_id < len(saved_messages) and saved_messages[saved_id].message_id == message.id:
             if add_embeddings and saved_messages[saved_id].embedding is None:
-                await create_message_embedding(dialog, message, user_id, saved_messages[saved_id].media_description, True)
+                await request_embedding(dialog, message, user_id, saved_messages[saved_id].media_description, True)
             saved_id += 1
-            continue
+        else:
+            await store_message(message, dialog, user_id, add_embeddings)
 
-        await store_message(message, dialog, user_id, add_embeddings)
-
-        if download_message:
+        if state_message:
             cur_status += 1
-            await resend_processing_status(user_id, bot, download_message, cur_status, msg_count)
+            await resend_processing_status(user_id, state_message, cur_status, msg_count)
+
+    if state_message is not None:
+        await application.bot.delete_message(user_id, state_message.id)
+    await application.bot.edit_message_text(chat_id=user_id, message_id=download_message.message_id,
+                                        text="Download is completed.")

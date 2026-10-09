@@ -1,20 +1,18 @@
-import telegram
 from pgvector import Vector
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telethon.tl.types import User, Channel
 
-from llm.completions import send_data
+from bot import application
+from server.requests import send_request
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
-from llm import llm_client
 from database.dialogs import get_allowed_dialogs, update_dialog_priorities, delete_old_dialog_priorities
 from database.messages import store_unsaved_messages, get_best_public_messages, get_best_private_messages
 from bot.commands.menu import menu
 from llm.embeddings import create_embedding
 from utils.config import config_file
-from utils.helpers import get_message_info, get_full_chat_name, resend_processing_status, \
-    send_message
+from utils.helpers import get_message_info, get_full_chat_name, resend_processing_status, send_message
 from utils.state import user_info
 from utils.check_authentication import check_authentication
 
@@ -86,19 +84,16 @@ async def process_search_chat(user_id) -> None:
     user_info[user_id].dialogs = queried_dialogs
 
 async def process_search_text(user_id, text: str):
-    user_id = user_id
     app_user = user_info[user_id]
     client = user_info[user_id].client
     queried_dialogs = user_info[user_id].dialogs
     embedding = await create_embedding(text)
     best_messages = []
 
-    message1 = await context.bot.send_message(chat_id=update.effective_chat.id,
-                                              text="Downloading messages form required dialogs. It might take a few minutes.")
     reset_idle_timer(user_id, reset=False)
 
     cur_status = 0
-    message2 = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
+    message2 = await send_message(user_id, "|" + " " * 100 + "| 0%")
     for dialog in queried_dialogs:
         await store_unsaved_messages(user_id, dialog, client, True)
         if isinstance(dialog[0].entity, Channel):
