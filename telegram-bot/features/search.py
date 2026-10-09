@@ -113,10 +113,10 @@ async def process_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     message2 = await context.bot.send_message(user_id, "|" + " " * 100 + "| 0%")
     for dialog in queried_dialogs:
         await store_unsaved_messages(user_id, dialog, client, True)
-        if isinstance(dialog[0], Channel):
-            best_messages += get_best_public_messages(dialog, embedding)
+        if isinstance(dialog[0].entity, Channel):
+            best_messages += get_best_public_messages(dialog, Vector(embedding), user_id)
         else:
-            best_messages += get_best_private_messages(user_id, dialog, embedding)
+            best_messages += get_best_private_messages(user_id, dialog, Vector(embedding))
         cur_status += 1
         await resend_processing_status(user_id, context.bot, message2, cur_status, len(queried_dialogs))
 

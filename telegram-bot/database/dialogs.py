@@ -4,7 +4,7 @@ from telethon.tl.custom import Dialog
 from telethon.tl.types import User, Channel, ForumTopic
 from telethon import functions, utils
 
-from utils.helpers import get_db_topic_id, get_topic_id
+from utils.helpers import get_topic_id
 from utils.state import user_info
 from . import cur, connection
 

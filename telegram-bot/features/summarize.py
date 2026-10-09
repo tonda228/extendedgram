@@ -167,11 +167,11 @@ async def process_summarize_query(update: Update, context: ContextTypes.DEFAULT_
         messages = ""
         if isinstance(chosen_dialog[0].entity, Channel):
             url_start = await client(functions.channels.ExportMessageLinkRequest(
-                channel=chosen_dialog[0],
+                channel=chosen_dialog[0].entity,
                 id=result["start_message_id"]
             ))
             url_end = await client(functions.channels.ExportMessageLinkRequest(
-                channel=chosen_dialog[0],
+                channel=chosen_dialog[0].entity,
                 id=result["end_message_id"]
             ))
             link_start = f"<a href='{url_start.link}'>here</a>"

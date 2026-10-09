@@ -12,7 +12,7 @@ from features.search import search_request
 from features.summarize import summarize_request
 from settings import settings
 from utils import infinite_task
-from utils.initialize_users import initialize_users, initialize_user_requests
+from utils.initialize_users import initialize_users
 
 # maybe set timer before shutdown
 # encrypt sessionstring and decrypt using user-provided password
@@ -22,7 +22,6 @@ from utils.initialize_users import initialize_users, initialize_user_requests
 
 async def main():
     await initialize_users()
-    await initialize_user_requests()
     await application.initialize()
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
@@ -47,7 +46,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CommandHandler("log_out", log_out_request))
     application.add_handler(CommandHandler("shut_down", shut_down))
-    application.add_handler(CommandHandler("get_requests", get_requests))
     application.add_handler(CallbackQueryHandler(process_button))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
 

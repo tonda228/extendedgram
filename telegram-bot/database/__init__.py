@@ -29,12 +29,6 @@ def drop_tables() -> None:
     DROP TABLE IF EXISTS private_message CASCADE;
     """)
 
-cur.execute("""
-ALTER TABLE app_user
-ADD COLUMN IF NOT EXISTS order_by TEXT
-""")
-connection.commit()
-
 def initialize_db() -> None:
     cur.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_user
@@ -42,7 +36,7 @@ def initialize_db() -> None:
                     user_id   BIGINT PRIMARY KEY,
                     user_name TEXT NOT NULL
                 );
-                                    
+
                 CREATE TABLE IF NOT EXISTS app_user
                 (
                     user_id BIGINT PRIMARY KEY REFERENCES telegram_user (user_id) ON DELETE CASCADE,
@@ -51,18 +45,25 @@ def initialize_db() -> None:
                     allow_all BOOLEAN NOT NULL,
                     preloading BOOLEAN NOT NULL,
                     history_size BIGINT NOT NULL,
-                    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_host BOOLEAN NOT NULL DEFAULT FALSE,
                     order_by TEXT NOT NULL DEFAULT 'date',
+                    password_hash TEXT,
+                    group_id BIGINT,
+                    token_hash TEXT
                 );
                 
-                CREATE TABLE IF NOT EXISTS user_request
+                CREATE TABLE IF NOT EXISTS user_group
                 (
-                    user_id BIGINT PRIMARY KEY REFERENCES telegram_user (user_id),
-                    is_resolved BOOLEAN NOT NULL,
-                    is_accepted BOOLEAN,
-                    is_user_notified BOOLEAN NOT NULL,
-                    resolved_by BIGINT NULL REFERENCES app_user (user_id)
+                    group_id BIGSERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_by BIGINT REFERENCES app_user (user_id) ON DELETE CASCADE
                 );
+                
+                ALTER TABLE app_user DROP CONSTRAINT IF EXISTS app_user_group_id_fkey;
+                ALTER TABLE app_user
+                ADD CONSTRAINT app_user_group_id_fkey
+                FOREIGN KEY (group_id) REFERENCES user_group (group_id);
 
                 CREATE TABLE IF NOT EXISTS channel
                 (

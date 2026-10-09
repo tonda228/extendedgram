@@ -136,7 +136,7 @@ def get_private_messages(dialog: tuple[Dialog, ForumTopic | None], user_id: int)
                """, (dialog[0].id, user_id))
     return cur.fetchall()
 
-def get_best_public_messages(dialog: tuple[Dialog, ForumTopic | None], embedding):
+def get_best_public_messages(dialog: tuple[Dialog, ForumTopic | None], embedding, user_id):
     topic_id = dialog[1].id if dialog[1] else 0
 
     cur.execute("""
@@ -148,13 +148,17 @@ def get_best_public_messages(dialog: tuple[Dialog, ForumTopic | None], embedding
         ORDER BY embedding <=> %s
         LIMIT 10
     )    
-    SELECT pm1.*, title, user_name
+    SELECT DISTINCT pm1.*, title, user_name
     FROM public_message pm1
-    JOIN dialog using (dialog_id, user_id)
-    JOIN telegram_user tu
+    JOIN channel using (channel_id, topic_id)
+    JOIN dialog d
+      ON d.channel_id = pm1.channel_id
+    AND d.topic_id = pm1.topic_id
+    AND d.user_id = %s
+    LEFT JOIN telegram_user tu
       ON pm1.sender_id = tu.user_id
-    WHERE channel_id = %s
-      and topic_id = %s
+    WHERE pm1.channel_id = %s
+      and pm1.topic_id = %s
       and EXISTS (
         SELECT 1
         FROM best_message bm1
@@ -173,14 +177,14 @@ def get_best_public_messages(dialog: tuple[Dialog, ForumTopic | None], embedding
             FROM public_message pm2
             WHERE channel_id = %s
                 AND topic_id = %s
-                AND pm2.date_time =< bm1.date_time
+                AND pm2.date_time <= bm1.date_time
                 AND pm2.message_id != bm1.message_id
             ORDER by pm2.date_time DESC
             LIMIT 5)
         )
     )
     ORDER BY pm1.message_id ASC
-    """, (dialog[0].entity.id, topic_id, embedding,
+    """, (dialog[0].entity.id, topic_id, embedding, user_id,
           dialog[0].entity.id, topic_id,
           dialog[0].entity.id, topic_id,
           dialog[0].entity.id, topic_id))
