@@ -1,16 +1,19 @@
+from time import monotonic
+import os
+from telegram.error import TelegramError
 from pgvector import Vector
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telethon.tl.types import User, Channel
 
 from bot import application
-from server.requests import send_request
+from server import get_host
+from server.requests import send_request, request_embedding
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
-from database.dialogs import get_allowed_dialogs, update_dialog_priorities, delete_old_dialog_priorities
+from database.dialogs import get_allowed_dialogs, update_dialog_priorities, delete_old_dialog_priorities, store_dialog
 from database.messages import store_unsaved_messages, get_best_public_messages, get_best_private_messages
 from bot.commands.menu import menu
-from llm.embeddings import create_embedding
 from utils.config import config_file
 from utils.helpers import get_message_info, get_full_chat_name, resend_processing_status, send_message
 from utils.state import user_info
@@ -18,12 +21,16 @@ from utils.check_authentication import check_authentication
 
 PAGE_SIZE = config_file["page_size"]
 
-async def search_request(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id=None, edit=False) -> None:
+async def search_request(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id: int|None=None, edit: bool=False, new_request: bool=True) -> None:
     if user_id is None:
         user_id = update.effective_user.id
     if not await check_authentication(user_id):
         return
     app_user = user_info[user_id]
+    if new_request:
+        app_user.dialogs = None
+        app_user.chosen_ids = None
+        app_user.cur_page = 0
 
     reset_idle_timer(user_id)
 
@@ -34,7 +41,7 @@ async def search_request(update: Update|None=None, context: ContextTypes.DEFAULT
             app_user.dialogs.sort(key=order_by)
     dialogs = app_user.dialogs
 
-    if len(dialogs) == 0:
+    if dialogs is None or len(dialogs) == 0:
         await send_message(chat_id=user_id, text="There are no dialogs or none are allowed.")
         await menu(user_id=user_id)
         return
@@ -66,15 +73,29 @@ async def search_request(update: Update|None=None, context: ContextTypes.DEFAULT
     app_user.status = UserState.WAIT_FOR_SEARCH_CHAT
     app_user.dialogs = dialogs
 
-async def process_search_chat(user_id) -> None:
+async def process_search_chat(user_id: int) -> None:
     user_id = user_id
     reset_idle_timer(user_id)
 
     given_dialogs = user_info[user_id].dialogs
-    reset_idle_timer(user_id)
+    chosen_ids = user_info[user_id].chosen_ids
+    if given_dialogs is None or chosen_ids is None:
+        return
 
-    queried_dialogs = [given_dialogs[int(index)] for index in user_info[user_id].chosen_ids]
+    if not chosen_ids:
+        await send_message(user_id, "Choose at least one chat before confirming.")
+        return
+    try:
+        indices = [int(index) for index in chosen_ids]
+        if any(index < 0 or index >= len(given_dialogs) for index in indices):
+            raise ValueError
+    except ValueError:
+        await send_message(user_id, "The chat list has changed. Please choose again.")
+        await search_request(user_id=user_id)
+        return
+    queried_dialogs = [given_dialogs[index] for index in indices]
     for dialog in queried_dialogs:
+        store_dialog(dialog, user_id, is_allowed=True)
         update_dialog_priorities(user_id, dialog)
     delete_old_dialog_priorities(user_id)
 
@@ -83,36 +104,62 @@ async def process_search_chat(user_id) -> None:
     user_info[user_id].status = UserState.WAIT_FOR_SEARCH_TEXT
     user_info[user_id].dialogs = queried_dialogs
 
-async def process_search_text(user_id, text: str):
-    app_user = user_info[user_id]
+async def process_search_text(user_id: int, text: str) -> None:
     client = user_info[user_id].client
     queried_dialogs = user_info[user_id].dialogs
-    embedding = await create_embedding(text)
+    if client is None or queried_dialogs is None:
+        return
+
+    host = await get_host(user_id)
+    if host is None or not host.embedding_model:
+        await send_message(user_id, "No host is available with a compatible embedding model.")
+        await menu(user_id=user_id)
+        return
+    model = host.embedding_model
+    extra_model = model if model != os.getenv("EMBEDDING_MODEL") else None
+    embedding = await request_embedding(user_id, text, model)
+    if not embedding:
+        await send_message(user_id, "There are no available hosts right now. Please try again later.")
+        await menu(user_id=user_id)
+        return
+
     best_messages = []
+    message2 = None
+    last_update = monotonic()
+    last_percent = 0
+    reset_idle_timer(user_id, False)
+    try:
+        message2 = await send_message(user_id, "░" * 40 + " 0%")
+        for cur_status, dialog in enumerate(queried_dialogs, start=1):
+            completed_download = await store_unsaved_messages(user_id, dialog, client, True, embedding_model=model)
+            if not completed_download:
+                await send_message(user_id, "Could not prepare messages. Please try again later.")
+                await menu(user_id=user_id)
+                return
+            if isinstance(dialog[0].entity, Channel):
+                best_messages += get_best_public_messages(dialog, embedding, user_id, extra_model)
+            else:
+                best_messages += get_best_private_messages(user_id, dialog, embedding, extra_model)
+            percent = cur_status * 100 // len(queried_dialogs)
+            if percent != last_percent and monotonic() - last_update >= 3:
+                last_update = monotonic()
+                if await resend_processing_status(user_id, message2, cur_status, len(queried_dialogs)):
+                    last_update = monotonic()
+                    last_percent = percent
 
-    reset_idle_timer(user_id, reset=False)
+        data = []
+        for message in best_messages:
+            get_message_info(data, message)
 
-    cur_status = 0
-    message2 = await send_message(user_id, "|" + " " * 100 + "| 0%")
-    for dialog in queried_dialogs:
-        await store_unsaved_messages(user_id, dialog, client, True)
-        if isinstance(dialog[0].entity, Channel):
-            best_messages += get_best_public_messages(dialog, Vector(embedding), user_id)
-        else:
-            best_messages += get_best_private_messages(user_id, dialog, Vector(embedding))
-        cur_status += 1
-        await resend_processing_status(user_id, message2, cur_status, len(queried_dialogs))
-
-    await application.bot.delete_message(user_id, message2.id)
-    reset_idle_timer(user_id)
-
-    data = []
-    for message in best_messages:
-        get_message_info(data, message)
-
-    result = await send_request(user_id, data, "search", text)
-    if result is None:
-        result="There are no available hosts or hosts malfunctioning."
-
-    await send_message(chat_id=user_id, text=result)
-    await menu(user_id=user_id)
+        result = await send_request(user_id, data, "search", text, embedding_model=model)
+        if result is None:
+            result = "Could not process the messages. Check your host and model, then try again."
+        await send_message(user_id, result)
+        await menu(user_id=user_id)
+    finally:
+        if message2 is not None:
+            try:
+                await message2.delete()
+            except TelegramError:
+                pass
+        reset_idle_timer(user_id)

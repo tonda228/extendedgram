@@ -7,7 +7,7 @@ from utils.helpers import send_message
 from utils.state import user_info
 
 
-async def display_history_size(user_id):
+async def display_history_size(user_id: int) -> None:
 
     history_size = user_info[user_id].history_size
     await send_message(chat_id=user_id, text=f"Current history size is {history_size} days")
@@ -21,11 +21,11 @@ async def display_history_size(user_id):
     await send_message(user_id, "Do you wish to change your history size?", InlineKeyboardMarkup(keyboard))
     user_info[user_id].status = UserState.WAIT_FOR_HISTORY_SIZE_CHANGE_CONFIRMATION
 
-async def query_new_history_size(user_id):
+async def query_new_history_size(user_id: int) -> None:
     await send_message(chat_id=user_id, text=f"Enter your new history size in days:")
     user_info[user_id].status = UserState.WAIT_FOR_NEW_HISTORY_SIZE
 
-async def change_history_size(user_id, text):
+async def change_history_size(user_id: int, text: str) -> None:
     try:
         new_history_size = int(text)
         if new_history_size <= 0:

@@ -9,7 +9,7 @@ from database.users import flip_user_state, update_ordering
 
 from database.groups import process_password_confirmation, query_password_confirmation, \
     query_new_group_password, join_group, check_group_password, create_group_request, join_group_request, \
-    display_group_info
+    save_group_embedding_model
 from utils.auth import process_phone_number, process_code, process_password, process_bot_password, send_one_time_code, \
     check_bot_password, process_bot_password_confirmation
 
@@ -18,6 +18,7 @@ from features.search import search_request, process_search_chat, process_search_
 from features.summarize import summarize_request, process_summarize_query
 
 from settings import settings
+from settings.groups import group_settings, show_group, request_group_model_change, request_group_delete, confirm_group_delete
 from settings.allowed_dialogs import display_allowed_dialogs, change_allowed_dialogs, \
     display_new_allowed_dialogs_options, query_new_allowed_dialogs_categories, query_new_allowed_dialogs
 from settings.history_size import display_history_size, change_history_size, query_new_history_size
@@ -44,11 +45,6 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif uninitialized_user.status == LoginStage.AWAIT_ROLE_TYPE_CHOICE:
             uninitialized_user.in_group = (query.data == "group")
             await query_phone_number(user_id)
-        elif uninitialized_user.status == LoginStage.AWAIT_GROUP_CHOICE:
-            if query.data == "create":
-                await create_group_request(user_id)
-            elif query.data == "join":
-                await join_group_request(user_id)
         elif uninitialized_user.status == LoginStage.AWAIT_IS_READY:
             await send_one_time_code(user_id)
         return
@@ -61,49 +57,89 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # menu
     if query.data == "summarize":
-        app_user.cur_page = 0
-        app_user.dialogs = None
         await summarize_request(user_id=user_id, edit=True)
         return
     elif query.data == "search":
-        app_user.cur_page = 0
-        app_user.chosen_ids = None
-        app_user.dialogs = None
         await search_request(user_id=user_id)
         return
     elif query.data == "settings":
        await settings(user_id=user_id, edit=True)
        return
 
-    if app_user.last_message and query.message.id != app_user.last_message.message_id:
+    if query.message is None or app_user.last_message is None or query.message.message_id != app_user.last_message.message_id:
         return
 
+    if app_user.status in (UserState.WAIT_FOR_SETTINGS_CHOICE, UserState.WAIT_FOR_GROUP_SETTINGS,
+                           UserState.WAIT_FOR_GROUP_CHOICE, UserState.WAIT_FOR_NEW_GROUP_NAME,
+                           UserState.WAIT_FOR_NEW_GROUP_PASSWORD, UserState.WAIT_FOR_NEW_GROUP_PASSWORD_CONFIRMATION,
+                           UserState.WAIT_FOR_GROUP_NAME, UserState.WAIT_FOR_GROUP_PASSWORD,
+                           UserState.WAIT_FOR_NEW_GROUP_EMBEDDING_MODEL, UserState.WAIT_FOR_GROUP_EMBEDDING_MODEL,
+                           UserState.WAIT_FOR_GROUP_DELETE_CONFIRMATION):
+        if query.data == "groups":
+            await group_settings(user_id, edit=True)
+            return
+
+    if app_user.status in (UserState.WAIT_FOR_GROUP_DELETE_CONFIRMATION, UserState.WAIT_FOR_GROUP_EMBEDDING_MODEL):
+        group = app_user.pending_group
+        if group is not None and query.data == f"group:{group.group_id}":
+            await show_group(user_id, group.group_id)
+        elif (group is not None and app_user.status == UserState.WAIT_FOR_GROUP_DELETE_CONFIRMATION
+              and query.data == f"group_delete_confirm:{group.group_id}"):
+            await confirm_group_delete(user_id, group.group_id)
+        return
+
+    if app_user.status == UserState.WAIT_FOR_GROUP_SETTINGS and isinstance(query.data, str):
+        action, _, group_id = query.data.partition(":")
+        if action == "create":
+            await create_group_request(user_id)
+        elif action == "join":
+            await join_group_request(user_id)
+        elif action == "groups_back":
+            await settings(user_id=user_id, edit=True)
+        elif action == "group" and group_id.isascii() and group_id.isdecimal():
+            await show_group(user_id, int(group_id))
+        elif action == "group_model" and group_id.isascii() and group_id.isdecimal():
+            await request_group_model_change(user_id, int(group_id))
+        elif action == "group_delete" and group_id.isascii() and group_id.isdecimal():
+            await request_group_delete(user_id, int(group_id))
+        return
+        
+    if app_user.status == UserState.WAIT_FOR_GROUP_CHOICE:
+        if query.data == "create":
+            await create_group_request(user_id)
+        elif query.data == "join":
+            await join_group_request(user_id)
+        return
 
     # summarize
     elif app_user.status == UserState.WAIT_FOR_SUMMARIZE_CHAT:
         if query.data == "back":
-            await query.delete_message()
-            app_user.status = UserState.AUTHENTICATED
+            await menu(user_id=user_id, edit=True)
         elif query.data == "prev":
             prev_page(app_user, len(app_user.dialogs))
-            await summarize_request(user_id=user_id, edit=True)
+            await summarize_request(user_id=user_id, edit=True, new_request=False)
         elif query.data == "next":
             next_page(app_user, len(app_user.dialogs))
-            await summarize_request(user_id=user_id, edit=True)
+            await summarize_request(user_id=user_id, edit=True, new_request=False)
         else:
             await process_summarize_query(user_id, query)
 
     elif app_user.status == UserState.WAIT_FOR_READ:
-        print("couldn't get here, :(")
         if query.data == "Yes":
+
+            client = app_user.client
+            if client is None or app_user.last_read is None:
+                return
+            dialog = app_user.last_read[0]
+            topic = app_user.last_read[1]
             if app_user.last_read[1] is None:
-                await app_user.client.send_read_acknowledge(app_user.last_read[0], clear_mentions=True, clear_reactions=True)
+                await client.send_read_acknowledge(dialog, clear_mentions=True, clear_reactions=True)
             else:
                 await app_user.client(
                     functions.messages.ReadDiscussionRequest(
-                        peer=app_user.last_read[0].entity,
-                        msg_id=app_user.last_read[1].id,
-                        read_max_id=app_user.last_read[1].top_message
+                        peer=dialog.entity,
+                        msg_id=topic.id,
+                        read_max_id=topic.top_message
                     )
                 )
         await query.delete_message()
@@ -114,24 +150,19 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if query.data == "confirm":
             await process_search_chat(user_id)
         elif query.data == "back":
-            await query.delete_message()
-            app_user.status = UserState.AUTHENTICATED
+            await menu(user_id=user_id, edit=True)
         elif query.data == "prev":
             prev_page(app_user, len(app_user.dialogs))
-            await search_request(user_id=user_id,edit=True)
+            await search_request(user_id=user_id, edit=True, new_request=False)
         elif query.data == "next":
             next_page(app_user, len(app_user.dialogs))
-            await search_request(user_id=user_id, edit=True)
-        elif query.data == "back":
-            await query.delete_message()
-            app_user.status = UserState.AUTHENTICATED
-            await menu(user_id=user_id)
+            await search_request(user_id=user_id, edit=True, new_request=False)
         else:
             await send_updated_inline_keyboard(user_id, query, save_to=app_user.chosen_ids)
 
     elif app_user.status == UserState.WAIT_FOR_SEARCH_TEXT:
         if query.data == "back":
-            await query.delete_message()
+            await menu(user_id=user_id, edit=True)
 
     # allowed_dialogs
     elif app_user.status == UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION:
@@ -183,17 +214,22 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # log_out
     elif app_user.status == UserState.WAIT_FOR_LOG_OUT_CONFIRMATION:
-        await query.delete_message()
         if query.data == "Yes":
+            await query.delete_message()
             await log_out_confirmation(user_id)
         else:
-            app_user.status = UserState.WAIT_FOR_SETTINGS_CHOICE
+            await settings(user_id=user_id, edit=True)
 
     # settings
     elif app_user.status == UserState.WAIT_FOR_SETTINGS_CHOICE:
         if query.data in ["allow_all", "set_read_after_summary", "preloading"]:
+            if query.data == "preloading" and not app_user.is_host:
+                await settings(user_id=user_id, edit=True)
+                return
             column = query.data
             flip_user_state(user_id, column)
+            if query.data == "preloading":
+                reset_idle_timer(user_id, app_user.preloading)
             await send_updated_inline_keyboard(user_id, query)
         elif query.data == "allowed_dialogs":
             await display_allowed_dialogs(user_id)
@@ -203,8 +239,6 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             app_user.order_by = "title" if app_user.order_by == "date" else "date"
             update_ordering(user_id, app_user.order_by)
             await settings(user_id=user_id, edit=True)
-        elif query.data == "group_info":
-            await display_group_info(user_id)
         elif query.data == "log_out":
             await log_out_request(user_id=user_id)
         elif query.data == "back":
@@ -239,16 +273,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await process_bot_password(user_id, text)
         elif status == LoginStage.AWAIT_BOT_PASSWORD_CONFIRMATION:
             await process_bot_password_confirmation(user_id, text)
-        elif status == LoginStage.AWAIT_GROUP_NAME:
-            await join_group(user_id, text)
-        elif status == LoginStage.AWAIT_NEW_GROUP_NAME:
-            await query_new_group_password(user_id, text)
-        elif status == LoginStage.AWAIT_NEW_GROUP_PASSWORD:
-            await query_password_confirmation(user_id, text)
-        elif status == LoginStage.AWAIT_NEW_GROUP_PASSWORD_CONFIRMATION:
-            await process_password_confirmation(user_id, text)
-        elif status == LoginStage.AWAIT_GROUP_PASSWORD:
-            await check_group_password(user_id, text)
         return
 
     if user_id not in user_info:
@@ -261,3 +285,15 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await process_search_text(user_id, text)
     elif status == UserState.WAIT_FOR_NEW_HISTORY_SIZE:
         await change_history_size(user_id, text)
+    elif status == UserState.WAIT_FOR_GROUP_NAME:
+        await join_group(user_id, text)
+    elif status == UserState.WAIT_FOR_NEW_GROUP_NAME:
+        await query_new_group_password(user_id, text)
+    elif status == UserState.WAIT_FOR_NEW_GROUP_PASSWORD:
+        await query_password_confirmation(user_id, text)
+    elif status == UserState.WAIT_FOR_NEW_GROUP_PASSWORD_CONFIRMATION:
+        await process_password_confirmation(user_id, text)
+    elif status in (UserState.WAIT_FOR_NEW_GROUP_EMBEDDING_MODEL, UserState.WAIT_FOR_GROUP_EMBEDDING_MODEL):
+        await save_group_embedding_model(user_id, text)
+    elif status == UserState.WAIT_FOR_GROUP_PASSWORD:
+        await check_group_password(user_id, text)

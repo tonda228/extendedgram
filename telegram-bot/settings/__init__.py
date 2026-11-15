@@ -8,7 +8,7 @@ from utils.state import user_info
 from utils.check_authentication import check_authentication
 
 
-async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id=None, edit=False):
+async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id: int | None=None, edit: bool=False) -> None:
     if user_id is None:
         user_id = update.effective_user.id
     if not await check_authentication(user_id):
@@ -27,22 +27,20 @@ async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|
             InlineKeyboardButton(text=f"Allow all: {allow_all}", callback_data="allow_all")
         ],
         [
-            InlineKeyboardButton(text=f"Read after summary: {set_read_after_summary}", callback_data="set_read_after_summary"),
-            InlineKeyboardButton(text=f"Preloading: {preloading}", callback_data="preloading")
-        ],
-        [
-            InlineKeyboardButton(text=f"History size: {app_user.history_size} days", callback_data="history_size")
-        ],
-        [
-            InlineKeyboardButton(text=f"Order dialogs by: {order_by}", callback_data="order_by")
-        ],
+            InlineKeyboardButton(text=f"Read after summary: {set_read_after_summary}", callback_data="set_read_after_summary")
+        ]
+    ]
+    if app_user.is_host:
+        keyboard[1].append(InlineKeyboardButton(text=f"Preloading: {preloading}", callback_data="preloading"))
+    keyboard.append([InlineKeyboardButton(text="Groups", callback_data="groups")])
+    keyboard += [
+        [InlineKeyboardButton(text=f"History size: {app_user.history_size} days", callback_data="history_size")],
+        [InlineKeyboardButton(text=f"Order dialogs by: {order_by}", callback_data="order_by")],
         [
             InlineKeyboardButton(text="Log out", callback_data="log_out"),
             InlineKeyboardButton(text="Back", callback_data="back")
         ]
     ]
-    if app_user.group_id:
-        keyboard.append([InlineKeyboardButton(text="Group information", callback_data="group_info")])
     markup = InlineKeyboardMarkup(keyboard)
     await send_message(user_id, "Settings", reply_markup=markup, edit=edit)
     app_user.status = UserState.WAIT_FOR_SETTINGS_CHOICE

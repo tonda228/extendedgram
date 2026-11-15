@@ -1,3 +1,6 @@
+from psycopg.rows import class_row
+from heapq import heapify, heappush
+
 import hashlib
 import os
 import secrets
@@ -11,13 +14,17 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.applications import AppType
 from fastapi.security import HTTPBearer
 
+from database.groups import get_app_user_groups
 from database.users import store_telegram_user
-from server import available_hosts, active_requests
+from features import event_handlers
+from features.preloading import reset_idle_timer
+from server import available_hosts, active_requests, available_group_hosts, disconnect_host, close_websocket, \
+    finish_requests
 from utils.check_authentication import offer_group_options
-from utils.classes import Host, UserState, AppUser
+from utils.classes import Host, UserState, AppUser, AppUserDBObject, AppUserPreloading
 from utils.helpers import get_user_name, send_message
 from utils.security import decrypt_string
-from utils.state import user_info, uninitialized_users
+from utils.state import user_info, uninitialized_users, user_preloading
 from pydantic import BaseModel
 
 API_ID = int(os.environ["API_ID"])
@@ -25,17 +32,18 @@ API_HASH = os.environ["API_HASH"]
 
 bearer = HTTPBearer()
 
-def create_api_handlers(app: AppType):
+def create_api_handlers(app: AppType) -> None:
     app.post("/pair")(check_pairing_code)
     app.websocket("/ws/{host_id}")(register_new_host)
 
-def authenticate_host(host_id, token: str):
-    cur.execute("""
-    SELECT *
-    FROM app_user
-    WHERE user_id = %s AND is_host = TRUE
-    """, (host_id,))
-    host = cur.fetchone()
+def authenticate_host(host_id: int, token: str) -> AppUserDBObject | None:
+    with connection.cursor(row_factory=class_row(AppUserDBObject)) as db_cur:
+        db_cur.execute("""
+        SELECT *
+        FROM app_user
+        WHERE user_id = %s AND is_host = TRUE
+        """, (host_id,))
+        host = db_cur.fetchone()
     if host is None:
         return None
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -48,7 +56,7 @@ class PairingRequest(BaseModel):
     code: str
 
 
-async def check_pairing_code(info: PairingRequest):
+async def check_pairing_code(info: PairingRequest) -> dict[str, str | None]:
     user_id = info.user_id
     pairing_code = info.code
 
@@ -56,6 +64,8 @@ async def check_pairing_code(info: PairingRequest):
         raise HTTPException(status_code=404, detail="Host not found")
     app_user = user_info[user_id]
     hashed = app_user.pairing_code_hash
+    if hashed is None:
+        raise HTTPException(status_code=404, detail="No active pairing session")
     if hashed != hashlib.sha256(pairing_code.encode()).hexdigest():
         raise HTTPException(status_code=404, detail="Hashes are different.")
 
@@ -66,18 +76,26 @@ async def check_pairing_code(info: PairingRequest):
     SET token_hash = %s
     WHERE user_id = %s
     """, (token_hash, user_id))
+    app_user.pairing_code_hash = None
     connection.commit()
 
     password = uninitialized_users[user_id].bot_password
+    in_group = uninitialized_users[user_id].in_group
+    del uninitialized_users[user_id]
     app_user.token_hash = token_hash
 
-    await offer_group_options(user_id)
+    if in_group:
+        await offer_group_options(user_id)
     return {"token": token, "password": password}
 
 
-async def register_new_host(websocket: WebSocket, host_id: int):
+async def register_new_host(websocket: WebSocket, host_id: int) -> None:
     authorization = websocket.headers.get("authorization")
     password = websocket.headers.get("password")
+    embedding_model = websocket.headers.get("embedding-model", "")
+    if not embedding_model or len(embedding_model) > 200 or any(char.isspace() or not char.isprintable() for char in embedding_model):
+        await websocket.close(code=1008, reason="A valid Embedding-Model header is required")
+        return
     if authorization is None or password is None:
         await websocket.close(code=1008)
         return
@@ -88,14 +106,20 @@ async def register_new_host(websocket: WebSocket, host_id: int):
         return
 
     host = authenticate_host(host_id, token)
-    if host is None or host.password_hash != hashlib.sha256(password.encode()).hexdigest():
+    if host is None:
+        # A disconnected host can learn that its saved credentials were revoked
+        # when it reconnects after the account was logged out.
+        await websocket.accept()
+        await websocket.close(code=4001, reason="Account credentials revoked")
+        return
+    if host.password_hash != hashlib.sha256(password.encode()).hexdigest():
         await websocket.close(code=1008)
         return
 
     await websocket.accept()
 
     if host_id not in user_info:
-        user_info[host_id] = AppUser(host_id, UserState.AUTHENTICATED, app_user=host)
+        user_info[host_id] = AppUser(status=UserState.AUTHENTICATED, **host.model_dump())
 
     app_user = user_info[host_id]
 
@@ -109,44 +133,76 @@ async def register_new_host(websocket: WebSocket, host_id: int):
         user_name = get_user_name(cur_user)
         store_telegram_user(cur_user.id, user_name)
 
+        user_preloading[app_user.user_id] = AppUserPreloading()
+        await event_handlers.create_new_message_handler(app_user.user_id)
+        await event_handlers.create_delete_message_handler(app_user.user_id)
+        reset_idle_timer(app_user.user_id)
+
     await send_message(chat_id=host_id, text="Successfully connected.")
 
-    uninitialized_user = uninitialized_users.get(host_id)
-    if uninitialized_user:
-        if uninitialized_user.in_group:
-            await offer_group_options(host_id)
-            return
-        else:
-            del uninitialized_users[host_id]
+    registered_host = Host(user=app_user, websocket=websocket, embedding_model=embedding_model)
+    available_hosts[host_id] = registered_host
 
-    await menu(user_id=host_id)
-    available_hosts[host_id] = Host(host, websocket)
-
-    await websocket.send_json({"status": 200})
+    groups = get_app_user_groups(host_id)
+    for group in groups:
+        hosts = available_group_hosts.get(group.group_id)
+        if hosts is None:
+            new_heap: list[Host] = list()
+            heapify(new_heap)
+            hosts = new_heap
+            available_group_hosts[group.group_id] = new_heap
+        heappush(hosts, registered_host)
 
     try:
+        await websocket.send_json({"status": 200})
+        uninitialized_user = uninitialized_users.get(host_id)
+        if uninitialized_user and uninitialized_user.in_group:
+            await offer_group_options(host_id)
+        elif app_user.status != UserState.WAIT_FOR_GROUP_CHOICE and app_user.status not in (
+            UserState.WAIT_FOR_NEW_GROUP_NAME, UserState.WAIT_FOR_NEW_GROUP_PASSWORD,
+            UserState.WAIT_FOR_NEW_GROUP_PASSWORD_CONFIRMATION, UserState.WAIT_FOR_GROUP_NAME,
+            UserState.WAIT_FOR_GROUP_PASSWORD,
+            UserState.WAIT_FOR_GROUP_SETTINGS, UserState.WAIT_FOR_NEW_GROUP_EMBEDDING_MODEL,
+            UserState.WAIT_FOR_GROUP_EMBEDDING_MODEL, UserState.WAIT_FOR_GROUP_DELETE_CONFIRMATION,
+        ):
+            if uninitialized_user:
+                del uninitialized_users[host_id]
+            await menu(user_id=host_id)
         while True:
             message = await websocket.receive_json()
             request_id = message.get("request_id")
             if request_id is None:
-                return
-            request = active_requests[request_id]
-            if not request_id or host_id != request.host.user.user_id:
+                continue
+            request = active_requests.get(request_id)
+            if not request or request.host is not registered_host:
                 continue
 
 
             user_id = message.get("user_id")
             operation = message.get("operation")
+            if message.get("status") == 102:
+                completed, total = message.get("completed"), message.get("total")
+                stage = message.get("stage")
+                if (user_id == request.user_id and request.progress_queue is not None
+                        and type(completed) is int and type(total) is int
+                        and 0 <= completed <= total and total > 0
+                        and stage in ("messages", "merging")):
+                    # Keep only the newest update when the UI is slower than the host.
+                    if request.progress_queue.full():
+                        request.progress_queue.get_nowait()
+                    request.progress_queue.put_nowait((completed, total, stage))
+                continue
             result = message.get("result")
-            if message.get("status") != 200 or not operation or not result:
-                # handle this properly
-                if not user_id:
-                    return
-                await send_message(chat_id=message["user_id"], text="Error on occurred on host side. Please try again later.")
-
-            del active_requests[request_id]
-            request.future.set_result(result)
+            if message.get("status") != 200:
+                result = None
+            elif user_id != request.user_id or not operation:
+                continue
+            active_requests.pop(request_id, None)
+            if not request.future.done():
+                request.future.set_result(result)
     except WebSocketDisconnect:
         print("host was disconnected")
-        if host_id in available_hosts:
-            del available_hosts[host_id]
+    finally:
+        await disconnect_host(registered_host)
+        await finish_requests(registered_host)
+        await close_websocket(registered_host, notify=False)

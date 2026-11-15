@@ -1,8 +1,12 @@
+from typing import Any
+
 import json
-from llm.completions import send_data
+from pydantic import TypeAdapter
+from utils.classes import SummaryTopic
+from llm.completions import send_data, ProgressCallback
 
 
-async def process_summarize_request(data):
+async def process_summarize_request(data: list[dict[str, Any]], progress: ProgressCallback | None = None) -> list[dict[str, Any]]:
     response_format = """
         [
             {
@@ -31,14 +35,25 @@ async def process_summarize_request(data):
                     "Add information about who says what if that person talks about his situation" + format_text)
 
 
-    results = await send_data(data, message_text,  True, 5)
+    results = await send_data(data, message_text, True, 5, progress=progress)
+    topics = TypeAdapter(list[SummaryTopic]).validate_python(results)
+    results = [topic.model_dump() for topic in topics]
 
-    if len(results) > 10:
+    for _ in range(5):
+        if len(results) <= 10:
+            return results
+        previous_count = len(results)
         message_text = "Combine those topics. Leave only 10 topics." + format_text
         data = [
             {"type": "text", "text": json.dumps(result)}
             for result in results
         ]
-        results = await send_data(data, message_text, for_summary=True)
+        results = await send_data(data, message_text, for_summary=True, progress=progress, progress_stage="merging")
+        topics = TypeAdapter(list[SummaryTopic]).validate_python(results)
+        results = [topic.model_dump() for topic in topics]
+        if len(results) >= previous_count:
+            raise ValueError("The model did not reduce the number of topics")
 
-    return results
+    if len(results) <= 10:
+        return results
+    raise ValueError("Could not combine the summary into ten topics")

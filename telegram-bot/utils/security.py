@@ -1,3 +1,4 @@
+
 import os
 import base64
 
@@ -5,7 +6,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-def derive_key(password: str, salt: bytes):
+def derive_key(password: str, salt: bytes) -> bytes:
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
@@ -15,7 +16,7 @@ def derive_key(password: str, salt: bytes):
 
     return kdf.derive(password.encode())
 
-def encrypt_string(text: str, password: str):
+def encrypt_string(text: str, password: str) -> str:
     salt = os.urandom(16)
     nonce = os.urandom(12)
 
@@ -27,7 +28,7 @@ def encrypt_string(text: str, password: str):
     data = salt + nonce + cipher_text
     return base64.urlsafe_b64encode(data).decode("ascii")
 
-def decrypt_string(data: str, password: str):
+def decrypt_string(data: str, password: str) -> str:
     data = base64.urlsafe_b64decode(data)
 
     salt = data[:16]

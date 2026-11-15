@@ -1,4 +1,9 @@
+import telethon
+from telegram import CallbackQuery
+
 import html
+from pydantic import TypeAdapter, ValidationError
+from utils.classes import SummaryTopic
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -8,7 +13,7 @@ from telethon.tl.types import User, Channel
 from bot.commands.menu import menu
 from server.requests import send_request
 from utils.classes import UserState
-from database.dialogs import get_allowed_dialogs, get_unread_count
+from database.dialogs import get_allowed_dialogs, get_unread_count, update_dialog_priorities, store_dialog
 from database.messages import store_unsaved_messages, get_public_messages_for_summarization, \
     get_private_messages_for_summarization
 from features.preloading import reset_idle_timer
@@ -19,12 +24,16 @@ from utils.helpers import get_message_info, send_message
 
 PAGE_SIZE = config_file["page_size"]
 
-async def summarize_request(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id=None, query=None, edit=False):
+async def summarize_request(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id: int | None=None, query: CallbackQuery | None=None, edit: bool=False, new_request: bool=True) -> None:
     if user_id is None:
         user_id = update.effective_user.id
     if not await check_authentication(user_id):
         return
     app_user = user_info[user_id]
+    if new_request:
+        app_user.dialogs = None
+        app_user.chosen_ids = None
+        app_user.cur_page = 0
     reset_idle_timer(user_id)
 
     if app_user.dialogs is None:
@@ -69,7 +78,7 @@ async def summarize_request(update: Update|None=None, context: ContextTypes.DEFA
     app_user.status = UserState.WAIT_FOR_SUMMARIZE_CHAT
     app_user.dialogs = unread_dialogs
 
-async def process_summarize_query(user_id, query):
+async def process_summarize_query(user_id: int, query: CallbackQuery) -> None:
     app_user = user_info[user_id]
     client = app_user.client
     unread_dialogs = app_user.dialogs
@@ -84,16 +93,23 @@ async def process_summarize_query(user_id, query):
         return
 
     chosen_dialog = unread_dialogs[dialog_id]
+    store_dialog(chosen_dialog, user_id, is_allowed=True, update=False)
+    update_dialog_priorities(user_id, chosen_dialog)
     data = []
     messages_count = chosen_dialog[0].unread_count if not chosen_dialog[1] else chosen_dialog[1].unread_count
 
-    reset_idle_timer(user_id, reset=False)
-    await store_unsaved_messages(user_id, chosen_dialog, client, False, messages_count)
-
-    reset_idle_timer(user_id)
+    reset_idle_timer(user_id, False)
+    try:
+        completed_download = await store_unsaved_messages(user_id, chosen_dialog, client, False, messages_count)
+    finally:
+        reset_idle_timer(user_id)
+    if not completed_download:
+        await send_message(user_id, "There are no available hosts right now. Please try again later.")
+        await menu(user_id=user_id)
+        return
 
     if isinstance(chosen_dialog[0].entity, Channel):
-        messages = get_public_messages_for_summarization(chosen_dialog, messages_count)
+        messages = get_public_messages_for_summarization(chosen_dialog, messages_count, user_id)
     else:
         messages = get_private_messages_for_summarization(chosen_dialog, user_id, messages_count)
 
@@ -101,24 +117,40 @@ async def process_summarize_query(user_id, query):
         get_message_info(data, message)
 
     results = await send_request(user_id, data, "summarize")
+    if not results:
+        await send_message(user_id, "Could not process the messages. Check your host and model, then try again.")
+        await menu(user_id=user_id)
+        return
 
-    for index, result in enumerate(results, start=1):
+
+    try:
+        topics = TypeAdapter(list[SummaryTopic]).validate_python(results)
+    except ValidationError:
+        await send_message(user_id, "The host returned an invalid summary. Please try again.")
+        await menu(user_id=user_id)
+        return
+
+    for index, topic_result in enumerate(topics, start=1):
+        result = topic_result.model_dump()
         messages = ""
         if isinstance(chosen_dialog[0].entity, Channel):
-            url_start = await client(functions.channels.ExportMessageLinkRequest(
-                channel=chosen_dialog[0].entity,
-                id=result["start_message_id"]
-            ))
-            url_end = await client(functions.channels.ExportMessageLinkRequest(
-                channel=chosen_dialog[0].entity,
-                id=result["end_message_id"]
-            ))
-            link_start = f"<a href='{url_start.link}'>here</a>"
-            link_end = f"<a href='{url_end.link}'>here</a>"
-            messages = f"From {link_start} to {link_end}\n"
+            try:
+                url_start = await client(functions.channels.ExportMessageLinkRequest(
+                    channel=chosen_dialog[0].entity,
+                    id=result["start_message_id"]
+                ))
+                url_end = await client(functions.channels.ExportMessageLinkRequest(
+                    channel=chosen_dialog[0].entity,
+                    id=result["end_message_id"]
+                ))
+                link_start = f"<a href='{url_start.link}'>here</a>"
+                link_end = f"<a href='{url_end.link}'>here</a>"
+                messages = f"From {link_start} to {link_end}\n"
+            except telethon.errors.rpcerrorlist.MessageIdInvalidError:
+                pass
         topic = html.escape(str(result["topic"]))
         summary = html.escape(str(result["summary"]))
-        await send_message(user_id, f"{index}) {topic}\n{messages}{summary}", disable_web_page_preview=True)
+        await send_message(user_id, f"{index}) {topic}\n{messages}{summary}", parse_mode="html", disable_web_page_preview=True)
 
 
     if app_user.set_read_after_summary:

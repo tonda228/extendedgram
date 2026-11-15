@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
@@ -47,23 +48,25 @@ def initialize_db() -> None:
                     history_size BIGINT NOT NULL,
                     is_host BOOLEAN NOT NULL DEFAULT FALSE,
                     order_by TEXT NOT NULL DEFAULT 'date',
-                    password_hash TEXT,
-                    group_id BIGINT,
+                    password_hash TEXT NOT NULL,
                     token_hash TEXT
                 );
                 
                 CREATE TABLE IF NOT EXISTS user_group
                 (
                     group_id BIGSERIAL PRIMARY KEY,
-                    name TEXT NOT NULL,
+                    name TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     created_by BIGINT REFERENCES app_user (user_id) ON DELETE CASCADE
                 );
                 
-                ALTER TABLE app_user DROP CONSTRAINT IF EXISTS app_user_group_id_fkey;
-                ALTER TABLE app_user
-                ADD CONSTRAINT app_user_group_id_fkey
-                FOREIGN KEY (group_id) REFERENCES user_group (group_id);
+                CREATE TABLE IF NOT EXISTS user_group_app_user
+                (
+                    group_id BIGINT REFERENCES user_group (group_id) ON DELETE CASCADE,
+                    user_id BIGINT REFERENCES app_user (user_id) ON DELETE CASCADE,
+                    
+                    PRIMARY KEY (group_id, user_id)
+                );
 
                 CREATE TABLE IF NOT EXISTS channel
                 (
@@ -81,9 +84,9 @@ def initialize_db() -> None:
                     title      TEXT    NOT NULL,
                     is_allowed BOOLEAN NOT NULL DEFAULT TRUE,
                     channel_id BIGINT  NULL,
-                    topic_id   BIGINT  NOT NULL DEFAULT 0,
+                    topic_id   BIGINT  DEFAULT 0,
 
-                    PRIMARY KEY (dialog_id, user_id),
+                    PRIMARY KEY (dialog_id, user_id, topic_id),
                     FOREIGN KEY (channel_id, topic_id)
                         REFERENCES channel (channel_id, topic_id)
                         ON DELETE CASCADE
@@ -93,11 +96,12 @@ def initialize_db() -> None:
                 (
                     dialog_id BIGINT,
                     user_id   BIGINT,
+                    topic_id  BIGINT,
                     date_time TIMESTAMPTZ,
 
-                    PRIMARY KEY (dialog_id, user_id, date_time),
-                    FOREIGN KEY (dialog_id, user_id)
-                        REFERENCES dialog (dialog_id, user_id)
+                    PRIMARY KEY (dialog_id, user_id, topic_id, date_time),
+                    FOREIGN KEY (dialog_id, user_id, topic_id)
+                        REFERENCES dialog (dialog_id, user_id, topic_id)
                         ON DELETE CASCADE
                 );
                 
@@ -105,7 +109,7 @@ def initialize_db() -> None:
                 (
                     message_id        BIGINT,
                     channel_id        BIGINT,
-                    topic_id          BIGINT,
+                    topic_id          BIGINT DEFAULT 0,
                     sender_id         BIGINT REFERENCES telegram_user (user_id) ON DELETE CASCADE,
                     date_time         TIMESTAMPTZ NOT NULL,
                     text              TEXT,
@@ -123,19 +127,24 @@ def initialize_db() -> None:
                     message_id        BIGINT,
                     dialog_id         BIGINT,
                     user_id           BIGINT,
+                    topic_id          BIGINT DEFAULT 0,
                     sender_id         BIGINT REFERENCES telegram_user (user_id) ON DELETE CASCADE,
                     date_time         TIMESTAMPTZ NOT NULL,
                     text              TEXT,
                     media_description TEXT,
                     embedding         vector(1024),
 
-                    PRIMARY KEY (message_id, dialog_id, user_id),
-                    FOREIGN KEY (dialog_id, user_id)
-                        REFERENCES dialog (dialog_id, user_id)
+                    PRIMARY KEY (message_id, dialog_id, user_id, topic_id),
+                    FOREIGN KEY (dialog_id, user_id, topic_id)
+                        REFERENCES dialog (dialog_id, user_id, topic_id)
                         ON DELETE CASCADE
                 );
 
-                CREATE INDEX ON public_message USING hnsw (embedding vector_cosine_ops);
-                CREATE INDEX ON private_message USING hnsw (embedding vector_cosine_ops);
+                CREATE INDEX IF NOT EXISTS public_message_embedding_hnsw_idx
+                ON public_message USING hnsw (embedding vector_cosine_ops);
+                
+                CREATE INDEX IF NOT EXISTS private_message_embedding_hnsw_idx
+                ON private_message USING hnsw (embedding vector_cosine_ops);
                 """)
+    cur.execute((Path(__file__).parent / "migrations" / "002_group_embedding_model.sql").read_text(encoding="utf-8"))
     connection.commit()

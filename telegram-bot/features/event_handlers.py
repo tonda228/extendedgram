@@ -1,10 +1,10 @@
+
 from telethon import events, TelegramClient, utils
 from telethon.tl.custom import Dialog, Message
-from telethon.tl.functions.messages import GetForumTopicsRequest
+from telethon.tl.functions.messages import GetForumTopicsByIDRequest
 
 from database.dialogs import store_dialog, get_allowed_dialogs
 from database.messages import store_message, delete_public_message, delete_private_message
-from utils.helpers import get_topic_id
 from utils.state import user_info
 from telethon.tl.types import User, Channel, ForumTopic, UpdateDeleteMessages, UpdateDeleteChannelMessages
 
@@ -14,25 +14,19 @@ async def get_topic(channel: Dialog, message: Message, client: TelegramClient) -
     topic_id = message.reply_to.reply_to_top_id or message.reply_to.reply_to_msg_id
 
     result = await client(
-        GetForumTopicsRequest(
-            peer=channel,
-            offset_date=None,
-            offset_id=0,
-            offset_topic=0,
-            limit=100
-        )
+        GetForumTopicsByIDRequest(peer=channel, topics=[topic_id])
     )
     for topic in result.topics:
-        if topic.id == topic_id:
+        if isinstance(topic, ForumTopic) and topic.id == topic_id:
             return topic
 
     return None
 
-async def create_new_message_handler(user_id: int):
+async def create_new_message_handler(user_id: int) -> None:
     client = user_info[user_id].client
 
     @client.on(events.NewMessage)
-    async def new_message_handler(event: events.NewMessage.Event):
+    async def new_message_handler(event: events.NewMessage.Event) -> None:
         app_user = user_info[user_id]
         if not app_user.preloading:
             return
@@ -46,16 +40,16 @@ async def create_new_message_handler(user_id: int):
         if not app_user.allow_all and (dialog_id, topic_id) not in app_user.allowed_dialogs_set:
             return
 
-        store_dialog((dialog, topic), user_id)
+        store_dialog((dialog, topic), user_id, is_allowed=True, update=False)
         await store_message(message, (dialog, topic), user_id, True)
 
 
 
-async def create_delete_message_handler(user_id: int):
+async def create_delete_message_handler(user_id: int) -> None:
     client = user_info[user_id].client
 
     @client.on(events.MessageDeleted)
-    async def delete_message_handler(event: events.MessageDeleted.Event):
+    async def delete_message_handler(event: events.MessageDeleted.Event) -> None:
         if isinstance(event.original_update, UpdateDeleteChannelMessages):
             for msg_id in event.deleted_ids:
                 delete_public_message(event.original_update.channel_id, msg_id)

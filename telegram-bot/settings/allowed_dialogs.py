@@ -1,3 +1,7 @@
+from telegram import CallbackQuery
+from telethon.tl.custom import Dialog
+from telethon.tl.types import ForumTopic
+
 from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,7 +18,7 @@ from utils.helpers import get_full_chat_name, get_topic_id, send_message
 
 PAGE_SIZE = config_file["page_size"]
 
-async def display_allowed_dialogs(user_id):
+async def display_allowed_dialogs(user_id: int) -> None:
     app_user = user_info[user_id]
     reset_idle_timer(user_id)
 
@@ -43,12 +47,17 @@ async def display_allowed_dialogs(user_id):
             InlineKeyboardButton(text="No", callback_data="No")
         ]
     ]
-    msg = await send_message(user_id, "Do you wish to change your choice?", reply_markup=InlineKeyboardMarkup(keyboard))
-    app_user.message_id = msg.id
+    await send_message(user_id, "Do you wish to change your choice?", reply_markup=InlineKeyboardMarkup(keyboard))
     app_user.status = UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION
 
-async def display_new_allowed_dialogs_options(user_id, query):
+async def display_new_allowed_dialogs_options(user_id: int, query: CallbackQuery) -> None:
     app_user = user_info[user_id]
+    if app_user.status == UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION:
+        app_user.chosen_ids = None
+        app_user.dialogs = None
+        app_user.allowed_dialogs_options = None
+        app_user.cur_page = 0
+        app_user.last_category = None
     options = app_user.allowed_dialogs_options if app_user.allowed_dialogs_options is not None else set()
     keyboard = [
         [InlineKeyboardButton(text="Allow all channels: " + ("✅" if "channels" in options else "❌"), callback_data="channels")],
@@ -66,7 +75,7 @@ async def display_new_allowed_dialogs_options(user_id, query):
     app_user.status = UserState.WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE
     app_user.allowed_dialogs_options = set() if app_user.allowed_dialogs_options is None else app_user.allowed_dialogs_options
 
-async def query_new_allowed_dialogs_categories(user_id, query):
+async def query_new_allowed_dialogs_categories(user_id: int, query: CallbackQuery) -> None:
     app_user = user_info[user_id]
     all_dialogs = await get_all_dialogs(user_id)
     allowed_dialogs_set = app_user.allowed_dialogs_set if app_user.allowed_dialogs_set is not None else set()
@@ -132,7 +141,7 @@ async def query_new_allowed_dialogs_categories(user_id, query):
     app_user.cur_page = 0
 
 
-async def query_new_allowed_dialogs(user_id, query, ):
+async def query_new_allowed_dialogs(user_id: int, query: CallbackQuery, ) -> None:
     app_user = user_info[user_id]
 
     all_dialogs = app_user.dialogs
@@ -187,7 +196,7 @@ async def query_new_allowed_dialogs(user_id, query, ):
     app_user.last_category = category
     app_user.category_dialogs_count = dialog_id
 
-def is_suitable(dialog, options):
+def is_suitable(dialog: tuple[Dialog, ForumTopic | None], options: set[str]) -> bool:
     save_channels = "channels" in options
     save_chats = "chats" in options
     save_users = "users" in options
@@ -203,11 +212,11 @@ def is_suitable(dialog, options):
         return True
     return False
 
-async def change_allowed_dialogs(user_id):
+async def change_allowed_dialogs(user_id: int) -> None:
     app_user = user_info[user_id]
     given_dialogs = app_user.dialogs or []
     all_dialogs = await get_all_dialogs(user_id)
-    options = app_user.allowed_dialogs_options
+    options = app_user.allowed_dialogs_options if app_user.allowed_dialogs_options is not None else set()
     ids = {int(index) for index in app_user.chosen_ids} if app_user.chosen_ids is not None else set()
     allowed_dialogs_set = app_user.allowed_dialogs_set if app_user.allowed_dialogs_set is not None else set()
 
@@ -230,17 +239,18 @@ async def change_allowed_dialogs(user_id):
             if index in ids:
                 store_dialog(dialog, user_id, True)
                 new_allowed_dialogs.append(dialog)
-                app_user.allowed_dialogs_set.add((dialog[0].id, get_topic_id(dialog)))
+                allowed_dialogs_set.add((dialog[0].id, get_topic_id(dialog)))
             else:
                 app_user.allow_all = False
                 store_dialog(dialog, user_id, False)
-                app_user.allowed_dialogs_set.discard((dialog[0].id, get_topic_id(dialog)))
+                allowed_dialogs_set.discard((dialog[0].id, get_topic_id(dialog)))
 
     await send_message(chat_id=user_id, text="Changes have been saved.")
 
     reset_idle_timer(user_id)
 
     app_user.allowed_dialogs = new_allowed_dialogs
+    app_user.allowed_dialogs_set = allowed_dialogs_set
     app_user.allowed_dialogs_options = None
     app_user.chosen_ids = None
 
