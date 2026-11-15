@@ -4,12 +4,14 @@ services:
     env_file:
       - .env
     volumes:
-      - ./telegram-bot/media:/app/media\
+      - ./telegram-bot/media:/app/media
       - ./telegram-bot/utils/config.json:/app/config.json
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
+    expose:
+      - "8000"
 
   db:
     image: pgvector/pgvector:pg18-trixie
@@ -18,9 +20,6 @@ services:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
-
-    ports:
-      - "5432:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql
@@ -33,5 +32,18 @@ services:
 
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
