@@ -94,6 +94,8 @@ async def send_request(user_id: int, data: str | list[dict[str, Any]], operation
                             "operation": operation, "data": data,
                             "search_text": search_text,
                         }
+                        if operation == "embedding":
+                            payload["embedding_model"] = model
                         request = Request(user_id=user_id, host=host, future=future,
                                           progress_queue=asyncio.Queue(maxsize=1) if is_model_request else None)
                         active_requests[request_id] = request

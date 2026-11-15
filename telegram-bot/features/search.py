@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from telethon.tl.types import User, Channel
 
 from bot import application
-from server import get_host
+from server import select_host
 from server.requests import send_request, request_embedding
 from utils.classes import UserState
 from features.preloading import reset_idle_timer
@@ -110,12 +110,12 @@ async def process_search_text(user_id: int, text: str) -> None:
     if client is None or queried_dialogs is None:
         return
 
-    host = await get_host(user_id)
-    if host is None or not host.embedding_model:
+    selection = select_host(user_id)
+    if selection is None:
         await send_message(user_id, "No host is available with a compatible embedding model.")
         await menu(user_id=user_id)
         return
-    model = host.embedding_model
+    _, model = selection
     extra_model = model if model != os.getenv("EMBEDDING_MODEL") else None
     embedding = await request_embedding(user_id, text, model)
     if not embedding:

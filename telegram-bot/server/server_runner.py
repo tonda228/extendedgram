@@ -2,6 +2,7 @@ from psycopg.rows import class_row
 from heapq import heapify, heappush
 
 import hashlib
+import json
 import os
 import secrets
 
@@ -22,6 +23,7 @@ from server import available_hosts, active_requests, available_group_hosts, disc
     finish_requests
 from utils.check_authentication import offer_group_options
 from utils.classes import Host, UserState, AppUser, AppUserDBObject, AppUserPreloading
+from utils.embedding_models import parse_embedding_models
 from utils.helpers import get_user_name, send_message
 from utils.security import decrypt_string
 from utils.state import user_info, uninitialized_users, user_preloading
@@ -92,9 +94,12 @@ async def check_pairing_code(info: PairingRequest) -> dict[str, str | None]:
 async def register_new_host(websocket: WebSocket, host_id: int) -> None:
     authorization = websocket.headers.get("authorization")
     password = websocket.headers.get("password")
-    embedding_model = websocket.headers.get("embedding-model", "")
-    if not embedding_model or len(embedding_model) > 200 or any(char.isspace() or not char.isprintable() for char in embedding_model):
-        await websocket.close(code=1008, reason="A valid Embedding-Model header is required")
+    advertised_models = websocket.headers.get("embedding-models")
+    try:
+        embedding_models = parse_embedding_models(json.loads(advertised_models) if advertised_models is not None
+                                                   else [websocket.headers.get("embedding-model")])
+    except ValueError:
+        await websocket.close(code=1008, reason="A valid Embedding-Models or Embedding-Model header is required")
         return
     if authorization is None or password is None:
         await websocket.close(code=1008)
@@ -140,7 +145,7 @@ async def register_new_host(websocket: WebSocket, host_id: int) -> None:
 
     await send_message(chat_id=host_id, text="Successfully connected.")
 
-    registered_host = Host(user=app_user, websocket=websocket, embedding_model=embedding_model)
+    registered_host = Host(user=app_user, websocket=websocket, embedding_models=embedding_models)
     available_hosts[host_id] = registered_host
 
     groups = get_app_user_groups(host_id)

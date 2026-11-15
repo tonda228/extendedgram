@@ -11,7 +11,7 @@ from telethon.tl.custom import Message, Dialog
 from telethon.tl.types import User, Channel, ForumTopic, MessageActionChatJoinedByLink
 
 from bot import application
-from server import get_host
+from server import select_host
 from server.requests import request_media_description, request_message_embedding
 from utils.classes import PublicMessageDBObject, PrivateMessageDBObject
 from utils.helpers import get_user_name, resend_processing_status, send_message
@@ -23,8 +23,8 @@ from .users import store_telegram_user
 async def store_message(message: Message, dialog: tuple[Dialog, ForumTopic | None], user_id: int, add_embeddings: bool=False,
                         embedding_model: str | None = None) -> bool:
     if add_embeddings and embedding_model is None:
-        host = await get_host(user_id)
-        embedding_model = host.embedding_model if host else None
+        selection = select_host(user_id)
+        embedding_model = selection[1] if selection else None
     if embedding_model == os.getenv("EMBEDDING_MODEL"):
         embedding_model = None
     topic_id = dialog[1].id if dialog[1] else 0
@@ -376,8 +376,8 @@ async def store_unsaved_messages(user_id: int,
                                  embedding_model: str | None = None) -> bool:
     default_model = os.getenv("EMBEDDING_MODEL")
     if add_embeddings and embedding_model is None:
-        host = await get_host(user_id)
-        embedding_model = host.embedding_model if host else default_model
+        selection = select_host(user_id)
+        embedding_model = selection[1] if selection else default_model
     extra_model = embedding_model if add_embeddings and embedding_model != default_model else None
     saved_id = 0
     limit = get_unread_count(dialog) if not add_embeddings else None

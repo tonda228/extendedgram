@@ -53,23 +53,31 @@ def update_host_priorities(host: Host):
         if any(stored_host is host for stored_host in hosts):
             heapify(hosts)
 
-async def get_host(user_id: int, embedding_model: str | None = None) -> Host | None:
+def select_host(user_id: int, embedding_model: str | None = None) -> tuple[Host, str] | None:
     own_host = available_hosts.get(user_id)
-    if own_host is not None and (embedding_model is None or own_host.embedding_model == embedding_model):
-        return own_host
+    if own_host is not None and own_host.embedding_models:
+        if embedding_model is None:
+            return own_host, own_host.embedding_models[0]
+        if embedding_model in own_host.embedding_models:
+            return own_host, embedding_model
 
     best = None
     default_model = os.getenv("EMBEDDING_MODEL")
     for group in get_app_user_groups(user_id):
         required_model = group.embedding_model or default_model
-        if embedding_model is not None and embedding_model != required_model:
+        if not required_model or (embedding_model is not None and embedding_model != required_model):
             continue
         heap = available_group_hosts.get(group.group_id)
         if not heap:
             continue
-        host = heap[0] if heap[0].embedding_model == required_model else min(
-            (host for host in heap if host.embedding_model == required_model),
+        host = heap[0] if required_model in heap[0].embedding_models else min(
+            (host for host in heap if required_model in host.embedding_models),
             key=lambda host: host.requests_count, default=None)
-        if host is not None and (best is None or host.requests_count < best.requests_count):
-            best = host
+        if host is not None and (best is None or host.requests_count < best[0].requests_count):
+            best = (host, required_model)
     return best
+
+
+async def get_host(user_id: int, embedding_model: str | None = None) -> Host | None:
+    selection = select_host(user_id, embedding_model)
+    return selection[0] if selection else None

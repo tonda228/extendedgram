@@ -157,7 +157,7 @@ class Host(BaseModel):
 
     user: AppUser
     requests_count: int = 0
-    embedding_model: str | None = None
+    embedding_models: tuple[str, ...] = ()
     websocket: WebSocket
     request_lock: asyncio.Lock = Field(default_factory=asyncio.Lock)
     disconnected: bool = False

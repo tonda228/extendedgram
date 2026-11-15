@@ -13,8 +13,15 @@ from host.search import process_search_request
 from host.summarize import process_summarize_request
 from llm.completions import translate_image
 from llm.embeddings import create_embedding
+from utils.embedding_models import parse_embedding_models
 
 load_dotenv()
+
+
+def get_configured_embedding_models() -> tuple[str, ...]:
+    configured = os.getenv("EMBEDDING_MODELS")
+    models = [model.strip() for model in configured.split(",")] if configured else [os.getenv("EMBEDDING_MODEL")]
+    return parse_embedding_models(models)
 
 def offer_another_user() -> bool:
     while True:
@@ -77,7 +84,9 @@ def remove_saved_user(user_id: int) -> None:
 async def send_error(websocket, request_id: int):
     await websocket.send(json.dumps({"status": 404, "request_id": request_id}))
 
-async def keep_host_running(websocket: ClientConnection):
+async def keep_host_running(websocket: ClientConnection, embedding_models: tuple[str, ...] | None = None):
+    if embedding_models is None:
+        embedding_models = get_configured_embedding_models()
     try:
         status = json.loads(await websocket.recv())
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -148,7 +157,11 @@ async def keep_host_running(websocket: ClientConnection):
                     continue
                 result = await process_search_request(request["data"], text, progress=report_progress)
             elif operation == "embedding":
-                result = await create_embedding(request["data"])
+                model = request.get("embedding_model", embedding_models[0])
+                if model not in embedding_models:
+                    await send_error(websocket, request_id)
+                    continue
+                result = await create_embedding(request["data"], model)
             elif operation == "image":
                 result = await translate_image(request["data"])
             else:
@@ -178,11 +191,18 @@ async def open_connection(user_data: dict[str, int|str]):
     token = user_data["token"]
     password = user_data["password"]
     try:
+        embedding_models = get_configured_embedding_models()
+    except ValueError as error:
+        print(f"Invalid embedding model configuration: {error}")
+        return
+
+    try:
         websocket = await websockets.connect(f"ws://localhost:8000/ws/{user_id}",
                                              additional_headers={
                                                  "Authorization": f"Bearer {token}",
                                                  "Password": password,
-                                                 "Embedding-Model": os.environ["EMBEDDING_MODEL"],
+                                                 "Embedding-Models": json.dumps(embedding_models),
+                                                 "Embedding-Model": embedding_models[0],
                                              },
                                              max_size=None)
     except Exception as e:
@@ -190,7 +210,7 @@ async def open_connection(user_data: dict[str, int|str]):
         print(e)
         return
 
-    worker = asyncio.create_task(keep_host_running(websocket))
+    worker = asyncio.create_task(keep_host_running(websocket, embedding_models))
     closed = asyncio.create_task(websocket.wait_closed())
     try:
         done, _ = await asyncio.wait((worker, closed), return_when=asyncio.FIRST_COMPLETED)
