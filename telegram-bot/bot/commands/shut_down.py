@@ -1,3 +1,4 @@
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -6,7 +7,7 @@ from utils import infinite_task
 from utils.state import user_info
 
 
-async def shut_down(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def shut_down(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     app_user = user_info[user_id]
     if not app_user.is_admin:
@@ -15,5 +16,6 @@ async def shut_down(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_idle_timer(user_id, False)
 
     if infinite_task.infinite_task:
+        infinite_task.shutdown_requested = True
         infinite_task.infinite_task.cancel()
 

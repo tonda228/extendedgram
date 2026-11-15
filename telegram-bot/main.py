@@ -6,7 +6,6 @@ from telegram.ext import filters, CommandHandler, MessageHandler, CallbackQueryH
 
 from bot import application
 from bot.command_handlers import process_button, process_message
-from bot.commands.shut_down import shut_down
 from database import initialize_db
 from bot.commands.start import start
 from bot.commands.logout import log_out_request
@@ -20,7 +19,7 @@ from utils.initialize_users import initialize_users
 
 app = FastAPI()
 
-async def run_server():
+async def run_server() -> None:
     create_api_handlers(app)
     config = uvicorn.Config(
         app,
@@ -36,7 +35,7 @@ async def run_server():
     except asyncio.CancelledError:
         pass
 
-async def run_bot():
+async def run_bot() -> None:
     await initialize_users()
     await application.initialize()
     await application.start()
@@ -51,7 +50,7 @@ async def run_bot():
     await application.stop()
     await application.shutdown()
 
-async def main():
+async def main() -> None:
     infinite_task.infinite_task = asyncio.create_task(infinite_task.get_infinite_task())
     try:
         await asyncio.gather(
@@ -71,7 +70,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CommandHandler("log_out", log_out_request))
-    application.add_handler(CommandHandler("shut_down", shut_down))
+    # application.add_handler(CommandHandler("shut_down", shut_down))
     application.add_handler(CallbackQueryHandler(process_button))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
 
