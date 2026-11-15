@@ -61,8 +61,42 @@ You don't need to understand databases, AI models, or servers to use the bot.
 1. **Open an ExtendedGram bot instance you trust.** Get the bot's Telegram link from its operator. There is no public bot link listed here yet.
 2. **Send `/start`.** Follow the instructions shown by the bot.
 3. **Connect your Telegram account.** Enter your phone number and Telegram verification code. If two-step verification is enabled, follow the additional password prompt.
-4. **Choose which chats can be processed.** Review your allowed-chat settings before using search or summaries.
-5. **Use the menu.** Choose **Summarize**, **Search**, or **Settings** depending on what you need.
+4. **If you chose to be a host** run following in your terminal **after you receive pairing code**:
+```commandline
+cd telegram-bot
+python -m host.main
+```
+Hosts declare which embedding models they support when connecting. A shared
+host is eligible for a group only if it offers the group's exact model name.
+All models must produce 1,024-dimensional embeddings and be available on the
+host's model server. Restart both processes after updating their code.
+
+On a host, keep `EMBEDDING_MODEL` for one model, or set an ordered list in its
+`.env` for multiple models:
+
+```dotenv
+EMBEDDING_MODELS=model-a,model-b
+```
+
+When `EMBEDDING_MODELS` is set, it takes precedence over the host's
+`EMBEDDING_MODEL`. The first model is used for your own requests on your host;
+shared group requests use the model required by the group. The coordinator
+still uses its singular `EMBEDDING_MODEL` as the default for groups.
+5. **Choose which chats can be processed.** Review your allowed-chat settings before using search or summaries.
+6. **Use the menu.** Choose **Summarize**, **Search**, or **Settings** depending on what you need.
+
+In **Settings → Groups**, members can see a group's required embedding model.
+The group creator sets it when creating the group and can change it later.
+Type `default` to use the coordinator's `EMBEDDING_MODEL`. Existing groups also
+start with that default. Your own host takes priority; otherwise the bot picks
+an eligible shared host from your groups. Search uses a single model throughout
+the request and builds missing embeddings when needed.
+
+Keep the coordinator's `EMBEDDING_MODEL` set to the model that produced the
+existing database vectors. Change a group's model in Settings instead. Other
+models' vectors are stored separately, so switching a group does not overwrite
+vectors made with another model. The bot runs the additive group-model migration
+on startup. Older databases must already have the forum-topic migration below.
 
 **Example workflow:** Open the bot after a busy day → select your class group → request a summary → search for “when is the project due?” if you need a specific detail.
 
@@ -168,3 +202,34 @@ A FastAPI backend coordinates work with hosts over WebSockets. Depending on the 
 ## Author
 
 Created by [Anton Chebotarov](https://github.com/tonda228).
+
+## Running tests
+
+For an existing database created before forum topics were added to dialog keys,
+apply `telegram-bot/database/migrations/001_dialog_topics.sql` before starting
+the updated bot. The migration preserves existing rows; topics omitted by the
+old schema must be synchronized again. Fresh databases use the updated schema
+directly. Changing `CREATE TABLE IF NOT EXISTS` does not migrate existing tables.
+
+Install the development dependencies and run pytest from the project root:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests cover encryption, Pydantic models, bot menus and authentication, host search and summaries, server host selection and request helpers, and preloading. Fake services provide responses without a running database, Telegram credentials, or an AI host.
+
+## Processing large requests
+
+The AI host processes messages in batches of up to 100 items and approximately
+24,000 JSON characters. Set `LLM_BATCH_MESSAGES` and `LLM_BATCH_CHARACTERS` in the
+host environment to adjust these limits for your model. These are character
+limits, not exact token limits; a single message can still exceed the model's
+context window.
+
+The bot displays progress for completed batches, then a separate combining stage.
+Hosts send activity updates every 15 seconds while waiting for the model. The
+coordinator allows 120 seconds without activity and 30 minutes for a model request
+in total. A timeout does not enqueue another copy of the same request. Restart
+both the coordinator and AI host after updating their progress protocol.
