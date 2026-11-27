@@ -1,8 +1,8 @@
 import hashlib
 import os
 import secrets
+from time import monotonic
 
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError, PasswordHashInvalidError, \
     PhoneCodeExpiredError, PhoneNumberInvalidError
@@ -16,6 +16,7 @@ from utils.classes import UserState, LoginStage, AppUserPreloading, AppUser, App
 from utils.helpers import get_user_name, send_message
 from utils.security import decrypt_string
 from utils.state import user_info, uninitialized_users, user_preloading
+from utils.session import record_activity
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -100,7 +101,8 @@ async def process_bot_password_confirmation(user_id: int, password: str) -> None
         await send_message(chat_id=user_id, text=text)
         await query_new_bot_password(user_id)
     else:
-        client = user_info[user_id].client
+        app_user = user_info[user_id]
+        client = app_user.client
         if client is None:
             return
         uninitialized_user = uninitialized_users[user_id]
@@ -109,36 +111,33 @@ async def process_bot_password_confirmation(user_id: int, password: str) -> None
         user_name = get_user_name(cur_user)
         store_telegram_user(cur_user.id, user_name)
         store_app_user(user_id, client, uninitialized_user.is_host, uninitialized_user.hashed_password, password)
+        app_user.is_host = uninitialized_user.is_host
+        app_user.password_hash = prev_hashed_password
+        app_user.status = UserState.AUTHENTICATED
+        record_activity(user_id)
+        del uninitialized_users[user_id]
         if uninitialized_user.is_host:
-            uninitialized_user.bot_password = password
-            await offer_one_time_code(user_id)
-        else:
-            del uninitialized_users[user_id]
+            await send_one_time_code(user_id)
+        if uninitialized_user.in_group or not uninitialized_user.is_host:
             await offer_group_options(user_id)
-
-
-async def offer_one_time_code(user_id: int) -> None:
-    text = ("Please make sure that you have downloaded code from github. Once you are ready you will receive "
-            "one-time code that you will use to connect your device to the server application. "
-            "Once you are ready press the button below.")
-    uninitialized_users[user_id].status = LoginStage.AWAIT_IS_READY
-    await send_message(user_id, text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(text="Ready", callback_data="ready")]]))
+        else:
+            from bot.commands.menu import menu
+            await menu(user_id=user_id)
 
 async def send_one_time_code(user_id: int) -> None:
+    app_user = user_info.get(user_id)
+    if (app_user is None or not app_user.is_host or not app_user.password_hash
+            or app_user.status < UserState.AUTHENTICATED or user_id in uninitialized_users):
+        return
     pairing_code = secrets.token_urlsafe(8)
-    user_info[user_id].pairing_code_hash = hashlib.sha256(pairing_code.encode()).hexdigest()
-    await send_message(user_id, f"Your user_id is {user_id}.\nYour code is: {pairing_code}")
+    app_user.pairing_code_hash = hashlib.sha256(pairing_code.encode()).hexdigest()
+    app_user.pairing_code_expires_at = monotonic() + 600
+    await send_message(user_id, f"Your user ID is {user_id}.\nYour pairing code is: {pairing_code}\n"
+                       "Enter it and your bot password in the host terminal within 10 minutes. "
+                       "You can get a new code from Settings → Pair host.")
 
-async def query_bot_password(app_user: AppUser|AppUserDBObject):
-    bot_password_txt = "Please enter bot password"
-    if not app_user.is_host:
-        await send_message(chat_id=app_user.user_id, text=bot_password_txt)
-    else:
-        text = "Please connect to the server"
-        groups = user_info[app_user.user_id].groups
-        if groups is not None and len(groups) != 0:
-            text = bot_password_txt + " or enter your password."
-        await send_message(chat_id=app_user.user_id, text=text)
+async def query_bot_password(app_user: AppUser | AppUserDBObject) -> None:
+    await send_message(chat_id=app_user.user_id, text="Please enter your bot password.")
 
 async def check_bot_password(user_id: int, password: str) -> None:
     app_user = user_info[user_id]
@@ -149,23 +148,25 @@ async def check_bot_password(user_id: int, password: str) -> None:
     if app_user.string_session is None:
         return
     string_session = decrypt_string(app_user.string_session, password)
-    app_user.client = TelegramClient(StringSession(string_session), API_ID, API_HASH)
-    await app_user.client.connect()
+    client = TelegramClient(StringSession(string_session), API_ID, API_HASH)
+    await client.connect()
+    app_user.client = client
     user_preloading[app_user.user_id] = AppUserPreloading()
     await event_handlers.create_new_message_handler(app_user.user_id)
     await event_handlers.create_delete_message_handler(app_user.user_id)
     reset_idle_timer(app_user.user_id)
 
     app_user.status = UserState.AUTHENTICATED
+    record_activity(user_id)
     await send_message(chat_id=user_id, text="Successfully logged in.")
+    from bot.commands.menu import menu
+    await menu(user_id=user_id)
 
 async def successful_login(user_id: int) -> None:
-    app_user = user_info[user_id]
     user_preloading[user_id] = AppUserPreloading()
     await event_handlers.create_new_message_handler(user_id)
     await event_handlers.create_delete_message_handler(user_id)
     reset_idle_timer(user_id)
-    app_user.status = UserState.AUTHENTICATED
 
     await send_message(chat_id=user_id, text="Successfully signed in.")
     await query_new_bot_password(user_id)

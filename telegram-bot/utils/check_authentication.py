@@ -8,6 +8,7 @@ from telethon.sessions import StringSession
 from utils.classes import AppUser, UserState, UninitializedUser, LoginStage
 from utils.helpers import send_message
 from utils.state import user_info, uninitialized_users
+from utils.session import expire_idle_session, record_activity
 
 load_dotenv()
 
@@ -64,16 +65,19 @@ async def offer_group_options(user_id: int) -> None:
     await send_message(chat_id=user_id, text=text, reply_markup=keyboard)
 
 async def check_authentication(user_id: int) -> bool:
-    is_user_in_memory = user_id in user_info
-    if is_user_in_memory and user_info[user_id].status >= UserState.AUTHENTICATED:
+    if user_id in uninitialized_users:
+        await send_message(user_id, "Please finish the current sign-up step.")
+        return False
+    app_user = user_info.get(user_id)
+    if app_user is not None and app_user.status >= UserState.AUTHENTICATED:
+        if await expire_idle_session(user_id):
+            return False
+        record_activity(user_id)
         return True
-    elif is_user_in_memory and user_info[user_id].status < UserState.AUTHENTICATED:
-        if user_id in uninitialized_users:
-            await send_message(user_id, "Please finish the current sign-up step.")
-        else:
-            from utils.auth import query_bot_password
-            await query_bot_password(user_info[user_id])
-    elif user_id not in uninitialized_users:
+    if app_user is not None:
+        from utils.auth import query_bot_password
+        await query_bot_password(app_user)
+    else:
         uninitialized_users[user_id] = UninitializedUser()
         await offer_role(user_id)
     return False

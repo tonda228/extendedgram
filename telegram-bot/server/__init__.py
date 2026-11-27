@@ -32,6 +32,8 @@ async def disconnect_host(host: Host):
     host.disconnected = True
     if available_hosts.get(host.user.user_id) is host:
         del available_hosts[host.user.user_id]
+        from utils.session import record_activity
+        record_activity(host.user.user_id)
     for hosts in available_group_hosts.values():
         hosts[:] = [stored_host for stored_host in hosts if stored_host is not host]
         heapify(hosts)

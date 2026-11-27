@@ -1,4 +1,8 @@
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
+from logging import getLogger
+import os
 
 import uvicorn
 from fastapi import FastAPI
@@ -14,51 +18,65 @@ from features.search import search_request
 from features.summarize import summarize_request
 from server.server_runner import create_api_handlers
 from settings import settings
-from utils import infinite_task
+from utils.infinite_task import send_shutdown_notification
 from utils.initialize_users import initialize_users
+from utils.state import user_info
+from utils.session import watch_idle_sessions
 
-app = FastAPI()
+logger = getLogger(__name__)
+
+
+@asynccontextmanager
+async def run_bot(app: FastAPI) -> AsyncIterator[None]:
+    await application.initialize()
+    try:
+        await initialize_users()
+        await application.start()
+        await application.updater.start_polling(drop_pending_updates=True)
+        session_watcher = asyncio.create_task(watch_idle_sessions())
+        try:
+            yield
+        finally:
+            session_watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await session_watcher
+            try:
+                await asyncio.wait_for(send_shutdown_notification(immediate=True), timeout=20)
+            except Exception:
+                logger.exception("Could not complete shutdown notifications")
+    finally:
+        try:
+            if application.updater.running:
+                await application.updater.stop()
+            if application.running:
+                await application.stop()
+        finally:
+            for user in list(user_info.values()):
+                if user.client is not None:
+                    try:
+                        await user.client.disconnect()
+                    except Exception:
+                        logger.exception("Could not disconnect Telegram client for user %s", user.user_id)
+            await application.shutdown()
+
+
+app = FastAPI(lifespan=run_bot)
 
 async def run_server() -> None:
     create_api_handlers(app)
     config = uvicorn.Config(
         app,
-        host="localhost",
+        host=os.getenv("COORDINATOR_BIND_HOST", "localhost"),
         port=8000,
-        log_level="info"
+        log_level="info",
+        timeout_graceful_shutdown=10,
+        ws_max_size=None,
     )
     server = uvicorn.Server(config=config)
     await server.serve()
 
-    try:
-        await infinite_task.infinite_task
-    except asyncio.CancelledError:
-        pass
-
-async def run_bot() -> None:
-    await initialize_users()
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(drop_pending_updates=True)
-
-    try:
-        await infinite_task.infinite_task
-    except asyncio.CancelledError:
-        pass
-
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
-
 async def main() -> None:
-    infinite_task.infinite_task = asyncio.create_task(infinite_task.get_infinite_task())
-    try:
-        await asyncio.gather(
-            run_bot(),
-            run_server()
-        )
-    except asyncio.CancelledError:
-        pass
+    await run_server()
 
 
 if __name__ == "__main__":

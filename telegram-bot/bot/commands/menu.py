@@ -10,7 +10,7 @@ from utils.helpers import send_message
 from utils.state import user_info
 
 
-async def menu(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id: int|None=None, query: CallbackQuery | None=None, edit: bool=False) -> None:
+async def menu(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id: int|None=None, query: CallbackQuery | None=None, edit: bool=False, notice: str | None=None) -> None:
     if user_id is None:
         user_id = update.effective_user.id
     if not await check_authentication(user_id):
@@ -26,5 +26,8 @@ async def menu(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None
         ]
     ]
     markup = InlineKeyboardMarkup(keyboard)
-    await send_message(user_id, "Where do you wish to continue?", reply_markup=markup, edit=edit)
+    text = "Where do you wish to continue?"
+    if notice:
+        text = f"{notice}\n\n{text}"
+    await send_message(user_id, text, reply_markup=markup, edit=edit)
     user_info[user_id].status = UserState.AUTHENTICATED

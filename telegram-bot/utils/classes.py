@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from time import monotonic
 from enum import IntEnum, auto
 
 from numpy import ndarray
@@ -41,6 +42,8 @@ class UserState(IntEnum):
     WAIT_FOR_NEW_GROUP_EMBEDDING_MODEL = auto()
     WAIT_FOR_GROUP_EMBEDDING_MODEL = auto()
     WAIT_FOR_GROUP_DELETE_CONFIRMATION = auto()
+    WAIT_FOR_SEARCH_DATES = auto()
+    WAIT_FOR_SEARCH_PERIOD = auto()
 
 class LoginStage(IntEnum):
     AWAIT_ROLE_CHOICE = auto()
@@ -50,7 +53,6 @@ class LoginStage(IntEnum):
     AWAIT_TELEGRAM_PASSWORD = auto()
     AWAIT_BOT_PASSWORD = auto()
     AWAIT_BOT_PASSWORD_CONFIRMATION = auto()
-    AWAIT_IS_READY = auto()
 
 class InitializationInfo(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -66,6 +68,7 @@ class AppUserDBObject(BaseModel):
     set_read_after_summary: bool
     allow_all: bool
     preloading: bool
+    process_images: bool = True
     history_size: int
     is_host: int
     order_by: str
@@ -134,7 +137,14 @@ class AppUser(BaseModel):
     category_dialogs_count: int = 0
     allowed_dialogs_set: set[tuple[int, int]]|None = None
     last_message: TelegramMessage | None = None  # Latest message with an inline keyboard.
+    temporary_message: TelegramMessage | None = None  # Short notice removed on the next screen.
     pairing_code_hash: str|None = None
+    pairing_code_expires_at: float = 0.0
+    last_activity: float = Field(default_factory=monotonic)
+    search_in_progress: bool = False
+    search_since: datetime | None = None
+    search_until: datetime | None = None
+    pending_search_query: str | None = None
 
     # db
     user_id: int
@@ -142,6 +152,7 @@ class AppUser(BaseModel):
     set_read_after_summary: bool = False
     allow_all: bool = True
     preloading: bool = False
+    process_images: bool = True
     history_size: int = 100
     is_host: int = False
     order_by: str = 'date'
@@ -191,7 +202,6 @@ class UninitializedUser(BaseModel):
     status: LoginStage = LoginStage.AWAIT_ROLE_CHOICE
     is_host: bool = False
     in_group: bool = False
-    bot_password: str|None = None
     _init_info: InitializationInfo = PrivateAttr(default_factory=InitializationInfo)
 
     group_name: str|None = None

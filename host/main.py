@@ -1,7 +1,10 @@
 import asyncio
 from contextlib import suppress
+from getpass import getpass
 import json
 import os
+from pathlib import Path
+from urllib.parse import urlsplit
 import websockets
 from dotenv import load_dotenv
 import httpx
@@ -16,6 +19,8 @@ from host.llm.embeddings import create_embedding, create_embeddings
 from host.utils.embedding_models import parse_embedding_models
 
 load_dotenv()
+AUTH_FILE = Path(os.getenv("AUTH_FILE", str(Path(__file__).with_name("auth.json"))))
+COORDINATOR_URL = os.getenv("COORDINATOR_URL", "").rstrip("/")
 
 
 def get_configured_embedding_models() -> tuple[str, ...]:
@@ -25,11 +30,11 @@ def get_configured_embedding_models() -> tuple[str, ...]:
 
 def offer_another_user() -> bool:
     while True:
-        new_user = input("Do you want to connect another account? [Y/n]:")
-        if new_user.lower() == 'n' or new_user.lower() == 'no':
-            return False
+        new_user = input("Do you want to connect another account? [y/N]:")
         if new_user.lower() in ('y', 'yes'):
             return True
+        if new_user.lower() in ('', 'n', 'no'):
+            return False
         else:
             print("Invalid choice")
 
@@ -44,14 +49,16 @@ async def get_token() -> list[tuple[int, str, str]]:
                 print("Invalid user_id. Try again.")
             else:
                 break
+        password = getpass("Please enter your bot password: ")
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"http://localhost:8000/pair", json={
+            response = await client.post(f"{COORDINATOR_URL}/pair", json={
                 "user_id": user_id,
-                "code": pairing_code
+                "code": pairing_code,
+                "password": password,
             })
             response.raise_for_status()
             info = response.json()
-            new_users.append((user_id, info["token"], info["password"]))
+            new_users.append((user_id, info["token"], password))
 
         if not offer_another_user():
             return new_users
@@ -67,18 +74,18 @@ def store_new_users(users_data, new_users):
         }
     users_data[:] = list(accounts.values())
 
-    with open("auth.json", "w") as auth_file:
+    with AUTH_FILE.open("w", encoding="utf-8") as auth_file:
         json.dump(users_data, auth_file)
 
 
 def remove_saved_user(user_id: int) -> None:
     try:
-        with open("auth.json", encoding="utf-8") as auth_file:
+        with AUTH_FILE.open(encoding="utf-8") as auth_file:
             users_data = json.load(auth_file)
     except FileNotFoundError:
         return
     users_data = [account for account in users_data if account["user_id"] != user_id]
-    with open("auth.json", "w", encoding="utf-8") as auth_file:
+    with AUTH_FILE.open("w", encoding="utf-8") as auth_file:
         json.dump(users_data, auth_file)
 
 async def send_error(websocket, request_id: int):
@@ -203,7 +210,10 @@ async def open_connection(user_data: dict[str, int|str]):
         return
 
     try:
-        websocket = await websockets.connect(f"ws://localhost:8000/ws/{user_id}",
+        coordinator = urlsplit(COORDINATOR_URL)
+        websocket_scheme = {"http": "ws", "https": "wss"}[coordinator.scheme]
+        websocket_url = coordinator._replace(scheme=websocket_scheme).geturl()
+        websocket = await websockets.connect(f"{websocket_url}/ws/{user_id}",
                                              additional_headers={
                                                  "Authorization": f"Bearer {token}",
                                                  "Password": password,
@@ -222,7 +232,7 @@ async def open_connection(user_data: dict[str, int|str]):
         done, _ = await asyncio.wait((worker, closed), return_when=asyncio.FIRST_COMPLETED)
         if worker in done:
             await worker
-    except ConnectionClosed as error:
+    except (ConnectionClosed, OSError) as error:
         print(f"Disconnected: {error}")
     finally:
         worker.cancel()
@@ -230,12 +240,15 @@ async def open_connection(user_data: dict[str, int|str]):
         await asyncio.gather(worker, closed, return_exceptions=True)
         if websocket.close_code == 4001:
             remove_saved_user(user_id)
-        await websocket.close()
+        with suppress(ConnectionClosed, OSError):
+            await websocket.close()
 
 async def open_connections() -> None:
-    is_file = os.path.exists("auth.json")
-    if is_file:
-        with open("auth.json") as auth_file:
+    if not COORDINATOR_URL:
+        print("Set COORDINATOR_URL in host/.env to your server address, for example https://YOUR_VPS_IP.")
+        return
+    if AUTH_FILE.is_file():
+        with AUTH_FILE.open(encoding="utf-8") as auth_file:
             users_data = json.load(auth_file)
     else:
         users_data = []
@@ -245,11 +258,20 @@ async def open_connections() -> None:
             new_users = await get_token()
             store_new_users(users_data, new_users)
         except httpx.HTTPStatusError:
-            print("Invalid user_id or pairing code.")
+            print("Pairing failed. Check your user ID, pairing code and bot password. "
+                  "Request a new code in Settings if the code expired or was used.")
+            return
+        except httpx.RequestError:
+            print("Could not reach the coordinator. Check COORDINATOR_URL and make sure the bot is running.")
             return
 
     connections = [open_connection(user_data) for user_data in users_data]
     await asyncio.gather(*connections)
 
 if __name__ == "__main__":
-    asyncio.run(open_connections())
+    try:
+        asyncio.run(open_connections())
+    except KeyboardInterrupt:
+        print("\nHost stopped.")
+    except EOFError:
+        print("Terminal input was closed. Run the host interactively to enter account details.")

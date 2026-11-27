@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import secrets
+from time import monotonic
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -14,6 +15,7 @@ from database import cur, connection
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.applications import AppType
 from fastapi.security import HTTPBearer
+from telegram.error import TelegramError
 
 from database.groups import get_app_user_groups
 from database.users import store_telegram_user
@@ -21,13 +23,13 @@ from features import event_handlers
 from features.preloading import reset_idle_timer
 from server import available_hosts, active_requests, available_group_hosts, disconnect_host, close_websocket, \
     finish_requests
-from utils.check_authentication import offer_group_options
 from utils.classes import Host, UserState, AppUser, AppUserDBObject, AppUserPreloading
 from utils.embedding_models import parse_embedding_models
 from utils.helpers import get_user_name, send_message
 from utils.security import decrypt_string
-from utils.state import user_info, uninitialized_users, user_preloading
-from pydantic import BaseModel
+from utils.state import user_info, user_preloading
+from utils.session import record_activity
+from pydantic import BaseModel, SecretStr
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -56,9 +58,10 @@ def authenticate_host(host_id: int, token: str) -> AppUserDBObject | None:
 class PairingRequest(BaseModel):
     user_id: int
     code: str
+    password: SecretStr
 
 
-async def check_pairing_code(info: PairingRequest) -> dict[str, str | None]:
+async def check_pairing_code(info: PairingRequest) -> dict[str, str]:
     user_id = info.user_id
     pairing_code = info.code
 
@@ -66,29 +69,31 @@ async def check_pairing_code(info: PairingRequest) -> dict[str, str | None]:
         raise HTTPException(status_code=404, detail="Host not found")
     app_user = user_info[user_id]
     hashed = app_user.pairing_code_hash
-    if hashed is None:
+    if hashed is None or app_user.pairing_code_expires_at <= monotonic():
         raise HTTPException(status_code=404, detail="No active pairing session")
-    if hashed != hashlib.sha256(pairing_code.encode()).hexdigest():
-        raise HTTPException(status_code=404, detail="Hashes are different.")
+    if (not app_user.password_hash
+            or not secrets.compare_digest(hashed, hashlib.sha256(pairing_code.encode()).hexdigest())
+            or not secrets.compare_digest(app_user.password_hash, hashlib.sha256(info.password.get_secret_value().encode()).hexdigest())):
+        raise HTTPException(status_code=403, detail="Invalid pairing code or bot password")
 
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    cur.execute("""
-    UPDATE app_user
-    SET token_hash = %s
-    WHERE user_id = %s
-    """, (token_hash, user_id))
+    try:
+        cur.execute("""
+        UPDATE app_user
+        SET token_hash = %s
+        WHERE user_id = %s AND is_host = TRUE
+        """, (token_hash, user_id))
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=404, detail="Host not found")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     app_user.pairing_code_hash = None
-    connection.commit()
-
-    password = uninitialized_users[user_id].bot_password
-    in_group = uninitialized_users[user_id].in_group
-    del uninitialized_users[user_id]
+    app_user.pairing_code_expires_at = 0.0
     app_user.token_hash = token_hash
-
-    if in_group:
-        await offer_group_options(user_id)
-    return {"token": token, "password": password}
+    return {"token": token}
 
 
 async def register_new_host(websocket: WebSocket, host_id: int) -> None:
@@ -124,17 +129,26 @@ async def register_new_host(websocket: WebSocket, host_id: int) -> None:
     await websocket.accept()
 
     if host_id not in user_info:
-        user_info[host_id] = AppUser(status=UserState.AUTHENTICATED, **host.model_dump())
+        user_info[host_id] = AppUser(status=UserState.LOGGED_OUT, **host.model_dump())
 
     app_user = user_info[host_id]
+    was_logged_out = app_user.status == UserState.LOGGED_OUT
 
     if app_user.client is None:
         string_session = decrypt_string(app_user.string_session, password)
-        user_info[host_id].client = TelegramClient(StringSession(string_session), API_ID, API_HASH)
-        await user_info[host_id].client.connect()
-        user_info[host_id].status = UserState.AUTHENTICATED
-
-        cur_user = await app_user.client.get_me()
+        client = TelegramClient(StringSession(string_session), API_ID, API_HASH)
+        try:
+            await client.connect()
+            cur_user = await client.get_me()
+        except (OSError, TimeoutError):
+            await client.disconnect()
+            await websocket.close(code=1011, reason="Could not connect to Telegram")
+            return
+        if cur_user is None:
+            await client.disconnect()
+            await websocket.close(code=1011, reason="Telegram session is no longer authorized")
+            return
+        app_user.client = client
         user_name = get_user_name(cur_user)
         store_telegram_user(cur_user.id, user_name)
 
@@ -142,11 +156,13 @@ async def register_new_host(websocket: WebSocket, host_id: int) -> None:
         await event_handlers.create_new_message_handler(app_user.user_id)
         await event_handlers.create_delete_message_handler(app_user.user_id)
         reset_idle_timer(app_user.user_id)
-
-    await send_message(chat_id=host_id, text="Successfully connected.")
+    if was_logged_out:
+        app_user.status = UserState.AUTHENTICATED
 
     registered_host = Host(user=app_user, websocket=websocket, embedding_models=embedding_models)
+    previous_host = available_hosts.get(host_id)
     available_hosts[host_id] = registered_host
+    record_activity(host_id)
 
     groups = get_app_user_groups(host_id)
     for group in groups:
@@ -158,21 +174,18 @@ async def register_new_host(websocket: WebSocket, host_id: int) -> None:
             available_group_hosts[group.group_id] = new_heap
         heappush(hosts, registered_host)
 
+    notify_disconnection = False
     try:
+        if previous_host is not None:
+            await disconnect_host(previous_host)
+            await finish_requests(previous_host)
+            await close_websocket(previous_host, notify=False)
         await websocket.send_json({"status": 200})
-        uninitialized_user = uninitialized_users.get(host_id)
-        if uninitialized_user and uninitialized_user.in_group:
-            await offer_group_options(host_id)
-        elif app_user.status != UserState.WAIT_FOR_GROUP_CHOICE and app_user.status not in (
-            UserState.WAIT_FOR_NEW_GROUP_NAME, UserState.WAIT_FOR_NEW_GROUP_PASSWORD,
-            UserState.WAIT_FOR_NEW_GROUP_PASSWORD_CONFIRMATION, UserState.WAIT_FOR_GROUP_NAME,
-            UserState.WAIT_FOR_GROUP_PASSWORD,
-            UserState.WAIT_FOR_GROUP_SETTINGS, UserState.WAIT_FOR_NEW_GROUP_EMBEDDING_MODEL,
-            UserState.WAIT_FOR_GROUP_EMBEDDING_MODEL, UserState.WAIT_FOR_GROUP_DELETE_CONFIRMATION,
-        ):
-            if uninitialized_user:
-                del uninitialized_users[host_id]
+        try:
+            await send_message(chat_id=host_id, text="Successfully connected.")
             await menu(user_id=host_id)
+        except TelegramError:
+            print(f"Could not notify host {host_id} that it connected.")
         while True:
             message = await websocket.receive_json()
             request_id = message.get("request_id")
@@ -205,9 +218,17 @@ async def register_new_host(websocket: WebSocket, host_id: int) -> None:
             active_requests.pop(request_id, None)
             if not request.future.done():
                 request.future.set_result(result)
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as error:
         print("host was disconnected")
+        notify_disconnection = error.code != 1012
     finally:
+        notify_disconnection = (notify_disconnection and not registered_host.disconnected
+                                and available_hosts.get(host_id) is registered_host)
         await disconnect_host(registered_host)
         await finish_requests(registered_host)
         await close_websocket(registered_host, notify=False)
+        if notify_disconnection:
+            try:
+                await menu(user_id=host_id, notice="Your host disconnected. Reconnect it to make your machine available again.")
+            except TelegramError:
+                print(f"Could not notify host {host_id} that it disconnected.")
