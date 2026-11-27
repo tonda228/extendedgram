@@ -54,94 +54,91 @@ async def wait_for_model(request: Request, progress_message: TelegramMessage | N
             status = (stage, completed * 100 // total)
             if status != last_status and monotonic() - last_update >= 3:
                 label = "Combining results..." if stage == "merging" else "Processing messages..."
-                if await resend_processing_status(request.user_id, progress_message, completed, total, label=label):
-                    last_update = monotonic()
-                    last_status = status
+                last_update = monotonic()
+                with suppress(TimeoutError, TelegramError):
+                    if await asyncio.wait_for(resend_processing_status(
+                            request.user_id, progress_message, completed, total, label=label), timeout=2):
+                        last_status = status
         finally:
             progress_task.cancel()
             with suppress(asyncio.CancelledError):
                 await progress_task
 
 
-async def send_request(user_id: int, data: str | list[dict[str, Any]], operation: str, search_text: str | None=None,
+async def send_request(user_id: int, data: str | list[str] | list[dict[str, Any]], operation: str, search_text: str | None=None,
                        *, embedding_model: str | None = None) -> Any:
     is_model_request = operation in ("search", "summarize")
+    response_timeout = MODEL_REQUEST_TIMEOUT if operation == "embedding" and isinstance(data, list) else REQUEST_TIMEOUT
+    model = embedding_model or (os.getenv("EMBEDDING_MODEL") if operation == "embedding" else None)
+    if operation == "embedding" and not model:
+        return None
+    host = await get_host(user_id, embedding_model=model) if model else await get_host(user_id)
+    if host is None:
+        return None
+
     progress_message = None
     try:
+        host.requests_count += 1
+        update_host_priorities(host)
         if is_model_request:
             progress_message = await send_message(user_id, "Waiting for the model...")
-        while True:
-            model = embedding_model or (os.getenv("EMBEDDING_MODEL") if operation == "embedding" else None)
-            if operation == "embedding" and not model:
+        # Wait for earlier work before starting this request's response timeout.
+        async with host.request_lock:
+            if host.disconnected:
                 return None
-            host = await get_host(user_id, embedding_model=model) if model else await get_host(user_id)
-            if host is None:
-                return None
-            failed = False
+            future = asyncio.get_running_loop().create_future()
+            request_id = uuid4().int
+            payload = {
+                "user_id": user_id, "request_id": request_id,
+                "operation": operation, "data": data, "search_text": search_text,
+            }
+            if operation == "embedding":
+                payload["embedding_model"] = model
+            request = Request(user_id=user_id, host=host, future=future,
+                              progress_queue=asyncio.Queue(maxsize=1) if is_model_request else None)
+            active_requests[request_id] = request
+            send_task = None
             try:
-                host.requests_count += 1
-                update_host_priorities(host)
-                # The host reads requests sequentially. Waiting for the lock must
-                # not consume the response timeout of a request still in the queue.
-                async with host.request_lock:
-                    if host.disconnected:
-                        return None
-                    for _ in range(1 if is_model_request else 5):
-                        future = asyncio.get_running_loop().create_future()
-                        request_id = uuid4().int
-                        payload = {
-                            "user_id": user_id, "request_id": request_id,
-                            "operation": operation, "data": data,
-                            "search_text": search_text,
-                        }
-                        if operation == "embedding":
-                            payload["embedding_model"] = model
-                        request = Request(user_id=user_id, host=host, future=future,
-                                          progress_queue=asyncio.Queue(maxsize=1) if is_model_request else None)
-                        active_requests[request_id] = request
-                        try:
-                            await asyncio.wait_for(host.websocket.send_json(payload), REQUEST_TIMEOUT)
-                            if is_model_request:
-                                result = await wait_for_model(request, progress_message)
-                            else:
-                                result = await asyncio.wait_for(future, REQUEST_TIMEOUT)
-                        except TimeoutError:
-                            # Do not enqueue another copy behind a model request
-                            # that may still be running on the host.
-                            failed = True
-                            break
-                        except asyncio.CancelledError:
-                            # This connection still has the cancelled work queued.
-                            await disconnect_host(host)
-                            await finish_requests(host)
-                            await close_websocket(host, notify=False)
-                            raise
-                        except (WebSocketDisconnect, OSError, RuntimeError):
-                            failed = True
-                            break
-                        finally:
-                            active_requests.pop(request_id, None)
-                            if not future.done():
-                                future.cancel()
-                        if result is not None:
-                            return result
-                        if is_model_request:
-                            # A model/API error does not mean the machine is offline.
-                            return None
-                    else:
-                        failed = True
-                    if failed:
-                        await disconnect_host(host)
-                        await finish_requests(host)
-                        await close_websocket(host)
-                # Fail once and let the feature show a single useful error.
+                send = asyncio.wait_for(host.websocket.send_json(payload), REQUEST_TIMEOUT)
+                if is_model_request:
+                    await send
+                    return await wait_for_model(request, progress_message)
+                send_task = asyncio.create_task(send)
+                await asyncio.shield(send_task)
+                return await asyncio.wait_for(asyncio.shield(future), response_timeout)
+            except asyncio.CancelledError:
+                # Let a short in-flight request finish before releasing the lock.
+                # Stopping preloading should not disconnect an otherwise healthy host.
+                disconnect = True
+                if send_task is not None and not send_task.cancelled():
+                    try:
+                        await asyncio.shield(send_task)
+                        await asyncio.wait_for(asyncio.shield(future), REQUEST_TIMEOUT)
+                        disconnect = False
+                    except (asyncio.CancelledError, TimeoutError, WebSocketDisconnect, OSError, RuntimeError):
+                        pass
+                if disconnect:
+                    if send_task is not None and not send_task.done():
+                        send_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await send_task
+                    await disconnect_host(host)
+                    await finish_requests(host)
+                    await close_websocket(host, notify=False)
+                raise
+            except (TimeoutError, WebSocketDisconnect, OSError, RuntimeError):
+                await disconnect_host(host)
+                await finish_requests(host)
+                await close_websocket(host)
                 return None
             finally:
-                host.requests_count -= 1
-                update_host_priorities(host)
+                active_requests.pop(request_id, None)
+                if not future.done():
+                    future.cancel()
     finally:
+        host.requests_count -= 1
+        update_host_priorities(host)
         if progress_message is not None:
-            # This is the dedicated progress message, never the current menu.
             with suppress(TelegramError):
                 await progress_message.delete()
 
@@ -167,6 +164,22 @@ async def request_embedding(user_id: int, text: str, embedding_model: str | None
         if vector.dimensions() != 1024 or not all(math.isfinite(value) for value in vector.to_list()):
             return None
         return vector
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+async def request_embeddings(user_id: int, texts: list[str], embedding_model: str) -> list[Vector] | None:
+    if not texts:
+        return []
+    result = await send_request(user_id, texts, "embedding", embedding_model=embedding_model)
+    if not isinstance(result, list) or len(result) != len(texts):
+        return None
+    try:
+        vectors = [Vector(values) for values in result]
+        if any(vector.dimensions() != 1024 or not all(math.isfinite(value) for value in vector.to_list())
+               for vector in vectors):
+            return None
+        return vectors
     except (ValueError, TypeError, OverflowError):
         return None
 

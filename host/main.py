@@ -12,7 +12,7 @@ from websockets.asyncio.client import ClientConnection
 from host.host.search import process_search_request
 from host.host.summarize import process_summarize_request
 from host.llm.completions import translate_image
-from host.llm.embeddings import create_embedding
+from host.llm.embeddings import create_embedding, create_embeddings
 from host.utils.embedding_models import parse_embedding_models
 
 load_dotenv()
@@ -115,7 +115,12 @@ async def keep_host_running(websocket: ClientConnection, embedding_models: tuple
 
         operation = request.get("operation")
         data = request["data"]
-        if operation in ("embedding", "image") and not isinstance(data, str):
+        if operation == "image" and not isinstance(data, str):
+            await send_error(websocket, request_id)
+            continue
+        if operation == "embedding" and not (isinstance(data, str) or (
+            isinstance(data, list) and data and all(isinstance(item, str) and item for item in data)
+        )):
             await send_error(websocket, request_id)
             continue
         if operation in ("search", "summarize") and (
@@ -161,7 +166,8 @@ async def keep_host_running(websocket: ClientConnection, embedding_models: tuple
                 if model not in embedding_models:
                     await send_error(websocket, request_id)
                     continue
-                result = await create_embedding(request["data"], model)
+                result = (await create_embeddings(data, model) if isinstance(data, list)
+                          else await create_embedding(data, model))
             elif operation == "image":
                 result = await translate_image(request["data"])
             else:

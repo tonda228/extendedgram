@@ -1,9 +1,14 @@
 from typing import Any
 
 import json
+import openai
 from pydantic import TypeAdapter
 from host.utils.classes import SummaryTopic
 from host.llm.completions import send_data, ProgressCallback
+
+
+MAX_TOPICS = 10
+TOPICS = TypeAdapter(list[SummaryTopic])
 
 
 async def process_summarize_request(data: list[dict[str, Any]], progress: ProgressCallback | None = None) -> list[dict[str, Any]]:
@@ -35,25 +40,39 @@ async def process_summarize_request(data: list[dict[str, Any]], progress: Progre
                     "Add information about who says what if that person talks about his situation" + format_text)
 
 
-    results = await send_data(data, message_text, True, 5, progress=progress)
-    topics = TypeAdapter(list[SummaryTopic]).validate_python(results)
-    results = [topic.model_dump() for topic in topics]
+    topics = TOPICS.validate_python(await send_data(data, message_text, True, 5, progress=progress))
+    stalled = False
 
     for _ in range(5):
-        if len(results) <= 10:
-            return results
-        previous_count = len(results)
-        message_text = "Combine those topics. Leave only 10 topics." + format_text
-        data = [
-            {"type": "text", "text": json.dumps(result)}
-            for result in results
+        if len(topics) <= MAX_TOPICS:
+            break
+        limit = MAX_TOPICS // 2 if stalled else MAX_TOPICS
+        message_text = (
+            f"Select or combine the most important topics. Return no more than {limit} topics in total per answer. "
+            "Omit minor topics and combine related ones. Do not repeat every input topic. "
+            "Keep the original message IDs and language." + format_text
+        )
+        merge_data = [
+            {"type": "text", "text": json.dumps(topic.model_dump(), ensure_ascii=False)}
+            for topic in topics
         ]
-        results = await send_data(data, message_text, for_summary=True, progress=progress, progress_stage="merging")
-        topics = TypeAdapter(list[SummaryTopic]).validate_python(results)
-        results = [topic.model_dump() for topic in topics]
-        if len(results) >= previous_count:
-            raise ValueError("The model did not reduce the number of topics")
+        try:
+            merged = TOPICS.validate_python(await send_data(
+                merge_data, message_text, for_summary=True, tries_left=2,
+                progress=progress, progress_stage="merging"))
+        except (ValueError, TypeError, openai.APIError):
+            # The optional merge failed; the last valid summaries are still usable.
+            break
+        if not merged or len(merged) >= len(topics):
+            if stalled:
+                break
+            stalled = True
+            continue
+        topics = merged
+        stalled = False
 
-    if len(results) <= 10:
-        return results
-    raise ValueError("Could not combine the summary into ten topics")
+    if len(topics) > MAX_TOPICS:
+        # Keep topics across the conversation instead of taking only the earliest ones.
+        topics = sorted(topics, key=lambda topic: topic.start_message_id)
+        topics = [topics[i * (len(topics) - 1) // (MAX_TOPICS - 1)] for i in range(MAX_TOPICS)]
+    return [topic.model_dump() for topic in topics]

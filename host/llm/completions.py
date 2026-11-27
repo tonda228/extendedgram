@@ -35,8 +35,6 @@ async def translate_image(image_data: str) -> str | None:
     return media_description
 
 ProgressCallback = Callable[[int, int, str], Awaitable[None]]
-BATCH_MESSAGES = max(1, int(os.getenv("LLM_BATCH_MESSAGES", "100")))
-BATCH_CHARACTERS = max(1000, int(os.getenv("LLM_BATCH_CHARACTERS", "24000")))
 
 
 async def send_data(data: list[dict[str, Any]],
@@ -45,29 +43,11 @@ async def send_data(data: list[dict[str, Any]],
                     tries_left: int = 5,
                     progress: ProgressCallback | None = None,
                     progress_stage: str = "messages") -> list[Any]:
-    batches: list[list[dict[str, Any]]] = []
-    batch: list[dict[str, Any]] = []
-    characters = 0
-    for item in data:
-        size = len(json.dumps(item, ensure_ascii=False))
-        if batch and (len(batch) >= BATCH_MESSAGES or characters + size > BATCH_CHARACTERS):
-            batches.append(batch)
-            batch = []
-            characters = 0
-        batch.append(item)
-        characters += size
-    if batch or not batches:
-        batches.append(batch)
-
-    results = []
-    completed = 0
     if progress is not None:
         await progress(0, max(1, len(data)), progress_stage)
-    for batch in batches:
-        results.extend(await _send_batch(batch, message_text, for_summary, tries_left))
-        completed += len(batch)
-        if progress is not None:
-            await progress(completed if data else 1, max(1, len(data)), progress_stage)
+    results = await _send_batch(data, message_text, for_summary, tries_left)
+    if progress is not None:
+        await progress(max(1, len(data)), max(1, len(data)), progress_stage)
     return results
 
 
