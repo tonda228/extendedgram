@@ -14,7 +14,7 @@ from utils.auth import process_phone_number, process_code, process_password, pro
     check_bot_password, process_bot_password_confirmation
 
 from features.preloading import reset_idle_timer
-from features.search import search_request, process_search_chat, process_search_text
+from features.search import search_request, process_search_chat, submit_search_query, query_search_dates, process_search_dates, query_search_text, start_pending_search
 from features.summarize import summarize_request, process_summarize_query
 
 from settings import settings
@@ -26,7 +26,7 @@ from settings.history_size import display_history_size, change_history_size, que
 from utils.helpers import next_page, prev_page
 from utils.state import user_info, uninitialized_users
 from utils.check_authentication import check_authentication, offer_host_type, query_phone_number
-from utils.keyboard import send_updated_inline_keyboard
+from utils.keyboard import send_updated_inline_keyboard, disable_inline_keyboard
 
 async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -45,15 +45,31 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif uninitialized_user.status == LoginStage.AWAIT_ROLE_TYPE_CHOICE:
             uninitialized_user.in_group = (query.data == "group")
             await query_phone_number(user_id)
-        elif uninitialized_user.status == LoginStage.AWAIT_IS_READY:
-            await send_one_time_code(user_id)
         return
 
     if not await check_authentication(user_id):
         return
 
     app_user = user_info[user_id]
+    if query.message is None or app_user.last_message is None or query.message.message_id != app_user.last_message.message_id:
+        return
     reset_idle_timer(user_id)
+
+    if (app_user.status in (UserState.WAIT_FOR_SEARCH_PERIOD, UserState.WAIT_FOR_SEARCH_DATES)
+            and query.data == "search_ignore_images"):
+        flip_user_state(user_id, "process_images")
+        if app_user.status == UserState.WAIT_FOR_SEARCH_DATES:
+            await query_search_dates(user_id)
+        else:
+            await query_search_text(user_id, edit=True)
+        return
+
+    if (app_user.status in (UserState.WAIT_FOR_SEARCH_PERIOD, UserState.WAIT_FOR_SEARCH_DATES)
+            and query.data == "search_default_dates"):
+        app_user.search_since = None
+        app_user.search_until = None
+        await start_pending_search(user_id)
+        return
 
     # menu
     if query.data == "summarize":
@@ -65,9 +81,6 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif query.data == "settings":
        await settings(user_id=user_id, edit=True)
        return
-
-    if query.message is None or app_user.last_message is None or query.message.message_id != app_user.last_message.message_id:
-        return
 
     if app_user.status in (UserState.WAIT_FOR_SETTINGS_CHOICE, UserState.WAIT_FOR_GROUP_SETTINGS,
                            UserState.WAIT_FOR_GROUP_CHOICE, UserState.WAIT_FOR_NEW_GROUP_NAME,
@@ -164,13 +177,29 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if query.data == "back":
             await menu(user_id=user_id, edit=True)
 
+    elif app_user.status == UserState.WAIT_FOR_SEARCH_PERIOD:
+        if query.data == "search_dates":
+            await query_search_dates(user_id)
+        elif query.data == "back":
+            app_user.pending_search_query = None
+            await query_search_text(user_id, edit=True)
+
+    elif app_user.status == UserState.WAIT_FOR_SEARCH_DATES:
+        if query.data == "back":
+            await query_search_text(user_id, edit=True)
+
     # allowed_dialogs
     elif app_user.status == UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION:
-        if query.data == "Yes":
+        if query.data in ("prev", "next"):
+            if query.data == "prev":
+                prev_page(app_user, len(app_user.dialogs or []))
+            else:
+                next_page(app_user, len(app_user.dialogs or []))
+            await display_allowed_dialogs(user_id, edit=True, new_request=False)
+        elif query.data == "Yes":
             await display_new_allowed_dialogs_options(user_id, query)
-        else:
-            await query.delete_message()
-            await settings(user_id=user_id)
+        elif query.data in ("No", "back"):
+            await settings(user_id=user_id, edit=True)
 
     elif app_user.status == UserState.WAIT_FOR_NEW_ALLOWED_DIALOGS_OPTIONS_CHOICE:
         if query.data == "confirm":
@@ -222,7 +251,7 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # settings
     elif app_user.status == UserState.WAIT_FOR_SETTINGS_CHOICE:
-        if query.data in ["allow_all", "set_read_after_summary", "preloading"]:
+        if query.data in ["allow_all", "set_read_after_summary", "preloading", "process_images"]:
             if query.data == "preloading" and not app_user.is_host:
                 await settings(user_id=user_id, edit=True)
                 return
@@ -233,6 +262,8 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await send_updated_inline_keyboard(user_id, query)
         elif query.data == "allowed_dialogs":
             await display_allowed_dialogs(user_id)
+        elif query.data == "pair_host" and app_user.is_host:
+            await send_one_time_code(user_id)
         elif query.data == "history_size":
             await display_history_size(user_id)
         elif query.data == "order_by":
@@ -246,11 +277,11 @@ async def process_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # history_size
     elif app_user.status == UserState.WAIT_FOR_HISTORY_SIZE_CHANGE_CONFIRMATION:
+        await disable_inline_keyboard(user_id)
         if query.data == "Yes":
             await query_new_history_size(user_id)
         else:
             await settings(user_id=user_id)
-        await query.delete_message()
 
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -281,8 +312,13 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     status = user_info[user_id].status
     if status == UserState.LOGGED_OUT:
         await check_bot_password(user_id, text)
+        return
+    if not await check_authentication(user_id):
+        return
     if status == UserState.WAIT_FOR_SEARCH_TEXT:
-        await process_search_text(user_id, text)
+        await submit_search_query(user_id, text)
+    elif status == UserState.WAIT_FOR_SEARCH_DATES:
+        await process_search_dates(user_id, text)
     elif status == UserState.WAIT_FOR_NEW_HISTORY_SIZE:
         await change_history_size(user_id, text)
     elif status == UserState.WAIT_FOR_GROUP_NAME:

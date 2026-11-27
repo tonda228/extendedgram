@@ -10,7 +10,6 @@ from utils.state import user_info
 async def display_history_size(user_id: int) -> None:
 
     history_size = user_info[user_id].history_size
-    await send_message(chat_id=user_id, text=f"Current history size is {history_size} days")
 
     keyboard = [
         [
@@ -18,11 +17,11 @@ async def display_history_size(user_id: int) -> None:
             InlineKeyboardButton(text="No, I do not.", callback_data="No")
         ]
     ]
-    await send_message(user_id, "Do you wish to change your history size?", InlineKeyboardMarkup(keyboard))
+    await send_message(user_id, f"Current history size is {history_size} days.\nDo you wish to change it?", InlineKeyboardMarkup(keyboard))
     user_info[user_id].status = UserState.WAIT_FOR_HISTORY_SIZE_CHANGE_CONFIRMATION
 
 async def query_new_history_size(user_id: int) -> None:
-    await send_message(chat_id=user_id, text=f"Enter your new history size in days:")
+    await send_message(chat_id=user_id, text="Enter your new history size in days:", temporary=True)
     user_info[user_id].status = UserState.WAIT_FOR_NEW_HISTORY_SIZE
 
 async def change_history_size(user_id: int, text: str) -> None:
@@ -31,7 +30,7 @@ async def change_history_size(user_id: int, text: str) -> None:
         if new_history_size <= 0:
             raise ValueError
     except ValueError:
-        await send_message(chat_id=user_id, text="Invalid input. Try again.")
+        await send_message(chat_id=user_id, text="Invalid input. Try again.", temporary=True)
         return
 
     cur.execute("""
@@ -42,8 +41,7 @@ async def change_history_size(user_id: int, text: str) -> None:
     connection.commit()
 
     user_info[user_id].history_size = new_history_size
-    await send_message(chat_id=user_id, text="New history size was set.")
-    await settings(user_id=user_id)
+    await settings(user_id=user_id, notice="New history size was set.")
 
 
 

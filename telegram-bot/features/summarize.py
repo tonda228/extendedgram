@@ -19,6 +19,7 @@ from database.messages import store_unsaved_messages, get_public_messages_for_su
 from features.preloading import reset_idle_timer
 from utils.config import config_file
 from utils.state import user_info
+from utils.keyboard import disable_inline_keyboard
 from utils.check_authentication import check_authentication
 from utils.helpers import get_message_info, send_message
 
@@ -40,14 +41,15 @@ async def summarize_request(update: Update|None=None, context: ContextTypes.DEFA
         app_user.allowed_dialogs = None
         allowed_dialogs = await get_allowed_dialogs(user_id)
         if len(allowed_dialogs) == 0:
-            await send_message(user_id, text="No dialog is allowed. You can change it in settings")
-            await menu(user_id=user_id)
+            await menu(user_id=user_id, notice="No dialog is allowed. You can change it in settings.")
             return
         unread_dialogs = [dialog for dialog in allowed_dialogs if get_unread_count(dialog) > 0]
         unread_dialogs.sort(key=lambda dialog: get_unread_count(dialog), reverse=True)
     else:
         unread_dialogs = app_user.dialogs
 
+    pages_count = max(1, (len(unread_dialogs) + PAGE_SIZE - 1) // PAGE_SIZE)
+    app_user.cur_page %= pages_count
     cur_page = app_user.cur_page
     start = cur_page * PAGE_SIZE
     end = start + PAGE_SIZE
@@ -64,8 +66,7 @@ async def summarize_request(update: Update|None=None, context: ContextTypes.DEFA
         keyboard.append([InlineKeyboardButton(text=dialog_text, callback_data=str(index))])
 
     if len(unread_dialogs) == 0:
-        await send_message(user_id, text="All dialogs are read. Come back later.")
-        await menu(user_id=user_id)
+        await menu(user_id=user_id, notice="All dialogs are read. Come back later.")
         return
 
     if len(unread_dialogs) > PAGE_SIZE:
@@ -74,7 +75,8 @@ async def summarize_request(update: Update|None=None, context: ContextTypes.DEFA
     keyboard.append([InlineKeyboardButton(text="Back", callback_data="back")])
     markup = InlineKeyboardMarkup(keyboard)
 
-    await send_message(user_id, "Choose which chat you want to summarize.", reply_markup=markup, edit=edit)
+    await send_message(user_id, f"Choose which chat you want to summarize.\nPage {cur_page + 1}/{pages_count}",
+                       reply_markup=markup, edit=edit)
     app_user.status = UserState.WAIT_FOR_SUMMARIZE_CHAT
     app_user.dialogs = unread_dialogs
 
@@ -93,6 +95,8 @@ async def process_summarize_query(user_id: int, query: CallbackQuery) -> None:
         return
 
     chosen_dialog = unread_dialogs[dialog_id]
+    app_user.status = UserState.WAIT_FOR_REQUEST_ANSWER
+    await disable_inline_keyboard(user_id)
     store_dialog(chosen_dialog, user_id, is_allowed=True, update=False)
     update_dialog_priorities(user_id, chosen_dialog)
     data = []
@@ -104,8 +108,7 @@ async def process_summarize_query(user_id: int, query: CallbackQuery) -> None:
     finally:
         reset_idle_timer(user_id)
     if not completed_download:
-        await send_message(user_id, "There are no available hosts right now. Please try again later.")
-        await menu(user_id=user_id)
+        await menu(user_id=user_id, notice="There are no available hosts right now. Please try again later.")
         return
 
     if isinstance(chosen_dialog[0].entity, Channel):
@@ -118,16 +121,14 @@ async def process_summarize_query(user_id: int, query: CallbackQuery) -> None:
 
     results = await send_request(user_id, data, "summarize")
     if not results:
-        await send_message(user_id, "Could not process the messages. Check your host and model, then try again.")
-        await menu(user_id=user_id)
+        await menu(user_id=user_id, notice="Could not process the messages. Check your host and model, then try again.")
         return
 
 
     try:
         topics = TypeAdapter(list[SummaryTopic]).validate_python(results)
     except ValidationError:
-        await send_message(user_id, "The host returned an invalid summary. Please try again.")
-        await menu(user_id=user_id)
+        await menu(user_id=user_id, notice="The host returned an invalid summary. Please try again.")
         return
 
     for index, topic_result in enumerate(topics, start=1):

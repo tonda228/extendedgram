@@ -18,28 +18,25 @@ from utils.helpers import get_full_chat_name, get_topic_id, send_message
 
 PAGE_SIZE = config_file["page_size"]
 
-async def display_allowed_dialogs(user_id: int) -> None:
+async def display_allowed_dialogs(user_id: int, edit: bool = False, new_request: bool = True) -> None:
     app_user = user_info[user_id]
     reset_idle_timer(user_id)
 
-    if user_info[user_id].allow_all:
-        await send_message(chat_id=user_id, text=f"All dialogs are allowed.")
-    else:
-        allowed_dialogs = await get_allowed_dialogs(user_id)
-        order_by = (lambda x: get_full_chat_name(x)) if app_user.order_by == "title" else None
-        if order_by:
-            allowed_dialogs.sort(key=order_by)
-        if len(allowed_dialogs) == 0:
-            await send_message(chat_id=user_id, text=f"No dialogs are allowed.")
-        else:
-            text = ""
-            add_new_line = False
-            for index, dialog in enumerate(allowed_dialogs, start=1):
-                if add_new_line:
-                    text += "\n"
-                text += f"<b> {index}) {escape(get_full_chat_name(dialog))} </b>"
-                add_new_line = True
-            await send_message(chat_id=user_id, text=text, parse_mode="HTML")
+    if new_request or app_user.dialogs is None:
+        app_user.dialogs = list(await get_allowed_dialogs(user_id))
+        if app_user.order_by == "title":
+            app_user.dialogs.sort(key=get_full_chat_name)
+        app_user.cur_page = 0
+    dialogs = app_user.dialogs
+    pages_count = max(1, (len(dialogs) + PAGE_SIZE - 1) // PAGE_SIZE)
+    app_user.cur_page %= pages_count
+    start = app_user.cur_page * PAGE_SIZE
+    lines = ["All dialogs are allowed." if app_user.allow_all else "Allowed dialogs:"]
+    if not dialogs:
+        lines.append("No dialogs are available." if app_user.allow_all else "No dialogs are allowed.")
+    for index, dialog in enumerate(dialogs[start:start + PAGE_SIZE], start=start + 1):
+        lines.append(f"<b>{index}) {escape(get_full_chat_name(dialog)[:180])}</b>")
+    lines += [f"\nPage {app_user.cur_page + 1}/{pages_count}", "Do you wish to change your choice?"]
 
     keyboard = [
         [
@@ -47,7 +44,12 @@ async def display_allowed_dialogs(user_id: int) -> None:
             InlineKeyboardButton(text="No", callback_data="No")
         ]
     ]
-    await send_message(user_id, "Do you wish to change your choice?", reply_markup=InlineKeyboardMarkup(keyboard))
+    if pages_count > 1:
+        keyboard.insert(0, [InlineKeyboardButton("◀ Prev", callback_data="prev"),
+                            InlineKeyboardButton("Next ▶️", callback_data="next")])
+    keyboard.append([InlineKeyboardButton("Back", callback_data="back")])
+    await send_message(user_id, "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard),
+                       parse_mode="HTML", edit=edit)
     app_user.status = UserState.WAIT_FOR_CHANGE_ALLOWED_DIALOGS_CONFIRMATION
 
 async def display_new_allowed_dialogs_options(user_id: int, query: CallbackQuery) -> None:
@@ -150,12 +152,9 @@ async def query_new_allowed_dialogs(user_id: int, query: CallbackQuery, ) -> Non
     if app_user.chosen_ids is None:
         app_user.chosen_ids = set()
     ids = app_user.chosen_ids
-    cur_page = app_user.cur_page
-    start = cur_page * PAGE_SIZE
-    end = start + PAGE_SIZE
-
-    keyboard = []
-    dialog_id = 0
+    if query.data not in ("prev", "next"):
+        app_user.cur_page = 0
+    visible_dialogs = []
     for index, dialog in enumerate(all_dialogs):
         if category == "channels" and not isinstance(dialog[0].entity, Channel):
             continue
@@ -173,28 +172,29 @@ async def query_new_allowed_dialogs(user_id: int, query: CallbackQuery, ) -> Non
         if isinstance(dialog[0].entity, Channel) and (dialog[0].entity.left or dialog[0].entity.restricted):
             continue
 
-        if not start <= dialog_id < end:
-            dialog_id += 1
-            continue
+        visible_dialogs.append((index, dialog))
 
-        dialog_name = dialog[0].title
-        if dialog[1]:
-            dialog_name += f"|{dialog[1].title}"
-
+    pages_count = max(1, (len(visible_dialogs) + PAGE_SIZE - 1) // PAGE_SIZE)
+    app_user.cur_page %= pages_count
+    start = app_user.cur_page * PAGE_SIZE
+    keyboard = []
+    for index, dialog in visible_dialogs[start:start + PAGE_SIZE]:
+        dialog_name = get_full_chat_name(dialog)
         dialog_text = dialog_name + ": " + ("✅" if str(index) in ids else "❌")
         keyboard.append([InlineKeyboardButton(text=dialog_text, callback_data=str(index))])
-        dialog_id += 1
 
 
-    if dialog_id > PAGE_SIZE:
+    if pages_count > 1:
         keyboard += [[InlineKeyboardButton(text="◀ Prev", callback_data="prev"),
                       InlineKeyboardButton(text="Next ▶️", callback_data="next")]]
     keyboard += [[InlineKeyboardButton(text="Confirm", callback_data="confirm")]]
+    keyboard += [[InlineKeyboardButton(text="Back", callback_data="back")]]
 
-    await send_message(chat_id=user_id, text="Choose which dialogs you want to allow.", reply_markup=InlineKeyboardMarkup(keyboard))
+    await send_message(chat_id=user_id, text=f"Choose which dialogs you want to allow.\nPage {app_user.cur_page + 1}/{pages_count}",
+                       reply_markup=InlineKeyboardMarkup(keyboard), edit=query.data in ("prev", "next"))
     app_user.status = UserState.WAIT_FOR_ALLOWED_DIALOGS_MANUAL_CHOICE
     app_user.last_category = category
-    app_user.category_dialogs_count = dialog_id
+    app_user.category_dialogs_count = len(visible_dialogs)
 
 def is_suitable(dialog: tuple[Dialog, ForumTopic | None], options: set[str]) -> bool:
     save_channels = "channels" in options
@@ -245,7 +245,6 @@ async def change_allowed_dialogs(user_id: int) -> None:
                 store_dialog(dialog, user_id, False)
                 allowed_dialogs_set.discard((dialog[0].id, get_topic_id(dialog)))
 
-    await send_message(chat_id=user_id, text="Changes have been saved.")
 
     reset_idle_timer(user_id)
 
@@ -262,4 +261,4 @@ async def change_allowed_dialogs(user_id: int) -> None:
         """, (user_id,))
 
     connection.commit()
-    await settings(user_id=user_id)
+    await settings(user_id=user_id, notice="Changes have been saved.")

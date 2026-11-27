@@ -8,7 +8,7 @@ from utils.state import user_info
 from utils.check_authentication import check_authentication
 
 
-async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id: int | None=None, edit: bool=False) -> None:
+async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|None=None, user_id: int | None=None, edit: bool=False, notice: str | None=None) -> None:
     if user_id is None:
         user_id = update.effective_user.id
     if not await check_authentication(user_id):
@@ -20,6 +20,7 @@ async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|
     allow_all = "✅" if app_user.allow_all else "❌"
     set_read_after_summary = "✅" if app_user.set_read_after_summary else "❌"
     preloading = "✅" if app_user.preloading else "❌"
+    ignore_images = "❌" if app_user.process_images else "✅"
     order_by = app_user.order_by
     keyboard = [
         [
@@ -32,7 +33,9 @@ async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|
     ]
     if app_user.is_host:
         keyboard[1].append(InlineKeyboardButton(text=f"Preloading: {preloading}", callback_data="preloading"))
+        keyboard.append([InlineKeyboardButton(text="Pair host", callback_data="pair_host")])
     keyboard.append([InlineKeyboardButton(text="Groups", callback_data="groups")])
+    keyboard.append([InlineKeyboardButton(text=f"Ignore unprocessed images: {ignore_images}", callback_data="process_images")])
     keyboard += [
         [InlineKeyboardButton(text=f"History size: {app_user.history_size} days", callback_data="history_size")],
         [InlineKeyboardButton(text=f"Order dialogs by: {order_by}", callback_data="order_by")],
@@ -42,5 +45,6 @@ async def settings(update: Update|None=None, context: ContextTypes.DEFAULT_TYPE|
         ]
     ]
     markup = InlineKeyboardMarkup(keyboard)
-    await send_message(user_id, "Settings", reply_markup=markup, edit=edit)
+    text = f"{notice}\n\nSettings" if notice else "Settings"
+    await send_message(user_id, text, reply_markup=markup, edit=edit)
     app_user.status = UserState.WAIT_FOR_SETTINGS_CHOICE
