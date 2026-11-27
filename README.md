@@ -108,8 +108,9 @@ processes skipped images when their messages are scanned again.
 
 ## Host configuration
 
-An AI host runs on your computer and connects to an existing bot instance over
-HTTPS/WSS. Ask the bot operator for its public server URL. You need Python 3.14
+An AI host runs on your computer and connects to the ExtendedGram server at
+`https://62.83.121.11` over HTTPS/WSS. Use
+[@soprano_jr_bot](https://t.me/soprano_jr_bot) in Telegram. You need Python 3.14
 or Docker and a running OpenAI-compatible model server.
 
 Download only the host folder:
@@ -124,15 +125,17 @@ Run all following commands from the repository root, which contains `host/`.
 Copy `host/.env.example` to `host/.env` and fill in your settings:
 
 ```dotenv
-COORDINATOR_URL=https://YOUR_SERVER_ADDRESS
+COORDINATOR_URL=https://62.83.121.11
 OPEN_AI_URL=http://127.0.0.1:1234/v1
 OPENAI_API_KEY=replace-with-your-model-server-key
 COMPLETIONS_MODEL=your-completions-model
 EMBEDDING_MODEL=your-embedding-model
 ```
 
-- `COORDINATOR_URL`: the HTTPS address supplied by the bot operator. Both pairing
-  and WebSocket connections use it; there is no default server address.
+- `COORDINATOR_URL`: keep `https://62.83.121.11`, the ExtendedGram server address.
+  Both pairing and WebSocket connections use it. This is also the default when
+  the variable is missing or empty. Other server addresses are rejected before
+  the host asks for account credentials.
 - `OPEN_AI_URL`: your model server's API URL, including `/v1`.
 - `OPENAI_API_KEY`: the key required by that model server. Use `local` only if
   the endpoint allows unauthenticated requests; the client requires a nonempty value.

@@ -5,7 +5,7 @@ services:
       - .env
     environment:
       AUTH_FILE: /app/state/auth.json
-      COORDINATOR_URL: "${COORDINATOR_URL:?Set COORDINATOR_URL in host/.env to your VPS HTTPS URL}"
+      COORDINATOR_URL: "${COORDINATOR_URL:-https://62.83.121.11}"
     volumes:
       - host_auth:/app/state
     restart: unless-stopped

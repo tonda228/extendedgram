@@ -1,8 +1,9 @@
 # ExtendedGram AI host
 
 This folder contains the AI host that runs on your computer. It connects to an
-existing ExtendedGram bot instance over HTTPS/WSS using the address supplied by
-its operator. You need a running OpenAI-compatible model server.
+the ExtendedGram server at `https://62.83.121.11` over HTTPS/WSS. Open
+[@soprano_jr_bot](https://t.me/soprano_jr_bot) in Telegram. You need a running
+OpenAI-compatible model server on your computer.
 
 ## Download only the host
 
@@ -39,7 +40,7 @@ Set the following values:
 
 | Variable | Meaning |
 |---|---|
-| `COORDINATOR_URL` | Public server URL supplied by the bot operator, such as `https://YOUR_VPS_IP` |
+| `COORDINATOR_URL` | ExtendedGram server: `https://62.83.121.11`. Keep this value unchanged. |
 | `OPEN_AI_URL` | Your model server's OpenAI-compatible API URL, including `/v1` |
 | `OPENAI_API_KEY` | Your model server's key; `local` is sufficient only for an unauthenticated server |
 | `COMPLETIONS_MODEL` | Exact model name for search answers, summaries, and enabled image descriptions |
@@ -50,9 +51,12 @@ names separated by commas. All advertised models must be available on your model
 server. The first is used for your own requests; group requests select the model
 required by the group.
 
-Use an `https://` coordinator URL. The host pairs over HTTPS and converts the URL
-to `wss://` automatically for the WebSocket connection. There is no default local
-coordinator address.
+The server address is already filled in in `.env.example` and is also the default
+when `COORDINATOR_URL` is missing or empty. Configure only your model server's
+URL, key, and model names. The host pairs over HTTPS and connects to
+`wss://62.83.121.11` automatically for WebSocket requests.
+If a different server address is configured, the host exits before asking for
+account credentials and tells you which address to use.
 
 ## Run with Python
 

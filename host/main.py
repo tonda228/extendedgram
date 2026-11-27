@@ -20,7 +20,7 @@ from host.utils.embedding_models import parse_embedding_models
 
 load_dotenv()
 AUTH_FILE = Path(os.getenv("AUTH_FILE", str(Path(__file__).with_name("auth.json"))))
-COORDINATOR_URL = os.getenv("COORDINATOR_URL", "").rstrip("/")
+COORDINATOR_URL = (os.getenv("COORDINATOR_URL") or "https://62.83.121.11").rstrip("/")
 
 
 def get_configured_embedding_models() -> tuple[str, ...]:
@@ -244,8 +244,8 @@ async def open_connection(user_data: dict[str, int|str]):
             await websocket.close()
 
 async def open_connections() -> None:
-    if not COORDINATOR_URL:
-        print("Set COORDINATOR_URL in host/.env to your server address, for example https://YOUR_VPS_IP.")
+    if COORDINATOR_URL != "https://62.83.121.11":
+        print("Use COORDINATOR_URL=https://62.83.121.11 in host/.env to connect to ExtendedGram.")
         return
     if AUTH_FILE.is_file():
         with AUTH_FILE.open(encoding="utf-8") as auth_file:

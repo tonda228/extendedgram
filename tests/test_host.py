@@ -84,8 +84,12 @@ def test_summary_keeps_valid_topics_when_merge_fails(load_module, run_async, fai
     assert result[0] == topics[0] and result[-1] == topics[-1]
 
 
-def test_pairing_and_websocket_use_configured_coordinator(load_module, run_async, monkeypatch):
-    monkeypatch.setenv("COORDINATOR_URL", "https://coordinator.example.test/")
+@pytest.mark.parametrize("server_address", [None, "", "https://62.83.121.11/"])
+def test_pairing_and_websocket_use_extendedgram_server(load_module, run_async, monkeypatch, server_address):
+    if server_address is None:
+        monkeypatch.delenv("COORDINATOR_URL", raising=False)
+    else:
+        monkeypatch.setenv("COORDINATOR_URL", server_address)
     module = load_module("host/main.py")
     monkeypatch.setattr("builtins.input", Mock(side_effect=["123", "fake-code", "n"]))
     monkeypatch.setattr(module, "getpass", Mock(return_value="fake-password"))
@@ -103,9 +107,25 @@ def test_pairing_and_websocket_use_configured_coordinator(load_module, run_async
     user_id, token, password = run_async(module.get_token())[0]
     run_async(module.open_connection({"user_id": user_id, "token": token, "password": password}))
 
-    client.post.assert_awaited_once_with("https://coordinator.example.test/pair",
+    client.post.assert_awaited_once_with("https://62.83.121.11/pair",
                                          json={"user_id": 123, "code": "fake-code", "password": "fake-password"})
-    assert connect.call_args.args[0] == "wss://coordinator.example.test/ws/123"
+    assert connect.call_args.args[0] == "wss://62.83.121.11/ws/123"
+
+
+@pytest.mark.parametrize("server_address", ["https://another-server.example.test", "http://62.83.121.11", "https://YOUR_VPS_IP"])
+def test_other_server_address_exits_before_requesting_credentials(load_module, run_async, monkeypatch, capsys, server_address):
+    monkeypatch.setenv("COORDINATOR_URL", server_address)
+    module = load_module("host/main.py")
+    module.get_token = AsyncMock()
+    module.open_connection = AsyncMock()
+    module.offer_another_user = Mock()
+
+    run_async(module.open_connections())
+
+    assert "Use COORDINATOR_URL=https://62.83.121.11" in capsys.readouterr().out
+    module.get_token.assert_not_awaited()
+    module.open_connection.assert_not_awaited()
+    module.offer_another_user.assert_not_called()
 
 
 def test_unreachable_coordinator_shows_pairing_error(load_module, run_async, monkeypatch, tmp_path, capsys):
@@ -117,21 +137,6 @@ def test_unreachable_coordinator_shows_pairing_error(load_module, run_async, mon
 
     assert "Could not reach the coordinator" in capsys.readouterr().out
     assert not module.AUTH_FILE.exists()
-
-
-def test_missing_server_address_exits_before_prompting_for_credentials(load_module, run_async, monkeypatch, capsys):
-    monkeypatch.delenv("COORDINATOR_URL", raising=False)
-    module = load_module("host/main.py")
-    module.get_token = AsyncMock()
-    module.open_connection = AsyncMock()
-    module.offer_another_user = Mock(side_effect=AssertionError("No account prompt without a server URL"))
-
-    run_async(module.open_connections())
-
-    assert "Set COORDINATOR_URL in host/.env" in capsys.readouterr().out
-    module.get_token.assert_not_awaited()
-    module.open_connection.assert_not_awaited()
-    module.offer_another_user.assert_not_called()
 
 
 @pytest.mark.parametrize("error,expected", [

@@ -47,7 +47,7 @@ def load_module(monkeypatch):
     monkeypatch.setenv("EMBEDDING_MODEL", "test-embedding")
     monkeypatch.delenv("EMBEDDING_MODELS", raising=False)
     monkeypatch.setenv("AUTH_FILE", "auth.json")
-    monkeypatch.setenv("COORDINATOR_URL", "http://localhost:8000")
+    monkeypatch.setenv("COORDINATOR_URL", "https://62.83.121.11")
 
     def load(path):
         relative_path = Path(path)
