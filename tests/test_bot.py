@@ -19,6 +19,17 @@ def test_menu_shows_available_actions(load_module, run_async, monkeypatch):
     assert user.status == UserState.AUTHENTICATED
 
 
+def test_processing_error_is_shown_in_the_menu_message(load_module, run_async, monkeypatch):
+    module = load_module("bot/commands/menu.py")
+    monkeypatch.setitem(module.user_info, 123, AppUser(user_id=123, status=UserState.AUTHENTICATED))
+
+    run_async(module.menu(user_id=123, notice="Could not process the messages."))
+
+    module.send_message.assert_awaited_once()
+    assert module.send_message.await_args.args[1] == "Could not process the messages.\n\nWhere do you wish to continue?"
+    assert module.send_message.await_args.kwargs["reply_markup"] is not None
+
+
 def test_menu_stops_when_user_is_not_authenticated(load_module, run_async):
     module = load_module("bot/commands/menu.py")
     module.check_authentication.return_value = False

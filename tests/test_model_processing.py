@@ -16,39 +16,79 @@ def make_host():
     return Host(user=AppUser(user_id=123, status=UserState.AUTHENTICATED), websocket=socket)
 
 
-def test_1200_messages_are_processed_once_in_small_batches(load_module, run_async):
-    module = load_module("llm/completions.py")
+@pytest.mark.parametrize("for_summary", [False, True])
+def test_1200_messages_use_one_model_request(load_module, run_async, for_summary):
+    module = load_module("host/llm/completions.py")
+    data = [{"type": "text", "text": f"Message {index}: " + "x" * 100} for index in range(1200)]
+    topics = [{"start_message_id": 1, "end_message_id": 1200, "topic": "Plans", "summary": "A plan was agreed."}]
+    create = module.llm_client.chat.completions.create
+    create.return_value = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=json.dumps(topics) if for_summary else "Answer"))])
+    progress = AsyncMock()
+
+    result = run_async(module.send_data(data, "Process messages", for_summary=for_summary, progress=progress))
+
+    batches = [call.kwargs["messages"][1]["content"] for call in create.await_args_list]
+    assert [len(batch) for batch in batches] == [1200]
+    assert [item for batch in batches for item in batch] == data
+    assert result == (topics if for_summary else ["Answer"])
+    assert [call.args for call in progress.await_args_list] == [
+        (0, 1200, "messages"), (1200, 1200, "messages")]
+
+
+def test_removed_batch_settings_do_not_limit_large_requests(load_module, run_async, monkeypatch):
+    monkeypatch.setenv("LLM_BATCH_MESSAGES", "1")
+    monkeypatch.setenv("LLM_BATCH_CHARACTERS", "1000")
+    module = load_module("host/llm/completions.py")
+    data = [{"type": "text", "text": "я" * 30000} for _ in range(3)]
+    create = module.llm_client.chat.completions.create
+    create.return_value = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Answer"))])
+
+    assert run_async(module.send_data(data, "Search")) == ["Answer"]
+
+    batches = [call.kwargs["messages"][1]["content"] for call in create.await_args_list]
+    assert [len(batch) for batch in batches] == [3]
+    assert [item for batch in batches for item in batch] == data
+
+
+def test_large_request_is_split_only_after_actual_context_error(load_module, run_async):
+    module = load_module("host/llm/completions.py")
     data = [{"type": "text", "text": str(index)} for index in range(1200)]
-    module.BATCH_MESSAGES = 100
-    module.BATCH_CHARACTERS = 24000
-    sent = []
-    module.get_request_data.side_effect = lambda batch, **kwargs: sent.extend(batch) or []
-    module.llm_client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="A partial answer"))])
+    create = module.llm_client.chat.completions.create
+    processed = []
+
+    async def complete(**kwargs):
+        batch = kwargs["messages"][1]["content"]
+        if len(batch) > 300:
+            response = httpx.Response(400, request=httpx.Request("POST", "https://example.test"))
+            raise openai.BadRequestError("Maximum context length exceeded", response=response, body=None)
+        processed.extend(batch)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="A partial answer"))])
+
+    create.side_effect = complete
     progress = AsyncMock()
 
     result = run_async(module.send_data(data, "Search", progress=progress))
 
-    assert sent == data
-    assert len(result) == 12
-    assert module.llm_client.chat.completions.create.await_count == 12
-    assert [call.args[0] for call in progress.await_args_list] == list(range(0, 1201, 100))
+    assert processed == data
+    assert len(result) == 4
+    assert create.await_count == 7
     progress.assert_awaited_with(1200, 1200, "messages")
 
 
-def test_batches_also_limit_text_size(load_module, run_async):
-    module = load_module("llm/completions.py")
-    module.BATCH_CHARACTERS = 1000
-    data = [{"text": "x" * 600} for _ in range(3)]
-    module.llm_client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="Answer"))])
+def test_truncated_model_answer_is_split_without_losing_messages(load_module, run_async):
+    module = load_module("host/llm/completions.py")
+    data = [{"text": str(index)} for index in range(4)]
+    answer = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Answer"))])
+    create = module.llm_client.chat.completions.create
+    create.side_effect = [SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")]), answer, answer]
 
-    assert len(run_async(module.send_data(data, "Search"))) == 3
-    assert module.llm_client.chat.completions.create.await_count == 3
+    assert run_async(module.send_data(data, "Search")) == ["Answer", "Answer"]
+    assert [call.kwargs["messages"][1]["content"] for call in create.await_args_list] == [data, data[:2], data[2:]]
 
 
 def test_invalid_model_configuration_does_not_retry_each_half(load_module, run_async):
-    module = load_module("llm/completions.py")
+    module = load_module("host/llm/completions.py")
     response = httpx.Response(400, request=httpx.Request("POST", "https://example.test"))
     module.llm_client.chat.completions.create.side_effect = openai.BadRequestError(
         "Invalid model configuration", response=response, body=None)
@@ -60,7 +100,7 @@ def test_invalid_model_configuration_does_not_retry_each_half(load_module, run_a
 
 
 def test_context_overflow_splits_batch_without_losing_messages(load_module, run_async):
-    module = load_module("llm/completions.py")
+    module = load_module("host/llm/completions.py")
     response = httpx.Response(400, request=httpx.Request("POST", "https://example.test"))
     answer = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Answer"))])
     module.llm_client.chat.completions.create.side_effect = [
@@ -70,16 +110,16 @@ def test_context_overflow_splits_batch_without_losing_messages(load_module, run_
     data = [{"text": str(index)} for index in range(4)]
 
     assert run_async(module.send_data(data, "Search")) == ["Answer", "Answer"]
-    batches = [call.args[0] for call in module.get_request_data.call_args_list]
+    batches = [call.kwargs["messages"][1]["content"]
+               for call in module.llm_client.chat.completions.create.await_args_list]
     assert batches == [data, data[:2], data[2:]]
 
 
-def test_search_rejects_merge_that_keeps_returning_multiple_answers(load_module, run_async):
-    module = load_module("host/search.py")
+def test_search_keeps_partial_answers_when_merge_cannot_combine_them(load_module, run_async):
+    module = load_module("host/host/search.py")
     module.send_data.return_value = ["First", "Second"]
 
-    with pytest.raises(ValueError, match="did not combine"):
-        run_async(module.process_search_request([], "When?"))
+    assert run_async(module.process_search_request([], "When?")) == "First\n\nSecond"
 
     assert module.send_data.await_count == 2
 
@@ -132,6 +172,40 @@ def test_model_error_does_not_disconnect_host_or_repeat_request(load_module, run
     assert host.requests_count == 0
 
 
+def test_cancelled_preload_drains_embedding_without_disconnecting_host(load_module, run_async):
+    module = load_module("server/requests.py")
+    host = make_host()
+    module.get_host.return_value = host
+
+    async def check():
+        sent = asyncio.Event()
+        requests = []
+
+        async def send(payload):
+            requests.append(module.active_requests[payload["request_id"]])
+            if len(requests) == 1:
+                sent.set()
+            else:
+                requests[-1].future.set_result([0.2])
+
+        host.websocket.send_json = AsyncMock(side_effect=send)
+        preload = asyncio.create_task(module.send_request(123, "Preload", "embedding"))
+        await sent.wait()
+        preload.cancel()
+        search = asyncio.create_task(module.send_request(123, "Search", "embedding"))
+        await asyncio.sleep(0)
+        assert len(requests) == 1
+        requests[0].future.set_result([0.1])
+        with pytest.raises(asyncio.CancelledError):
+            await preload
+        assert await search == [0.2]
+        assert host.requests_count == 0
+        assert not module.active_requests
+        module.disconnect_host.assert_not_awaited()
+
+    run_async(check())
+
+
 def test_timeout_sends_model_request_only_once(load_module, run_async, monkeypatch):
     module = load_module("server/requests.py")
     host = make_host()
@@ -166,6 +240,30 @@ def test_waiting_for_busy_host_does_not_start_request_timeout(load_module, run_a
         assert await task == "Done"
 
     run_async(check())
+
+
+def test_embedding_batch_uses_large_request_timeout(load_module, run_async, monkeypatch):
+    module = load_module("server/requests.py")
+    host = make_host()
+    module.get_host.return_value = host
+    monkeypatch.setattr(module, "REQUEST_TIMEOUT", 0.01)
+    monkeypatch.setattr(module, "MODEL_REQUEST_TIMEOUT", 1)
+
+    async def flow():
+        workers = []
+
+        async def reply(payload):
+            async def finish():
+                await asyncio.sleep(0.03)
+                module.active_requests[payload["request_id"]].future.set_result([[0.1], [0.2]])
+            workers.append(asyncio.create_task(finish()))
+
+        host.websocket.send_json = AsyncMock(side_effect=reply)
+        assert await module.send_request(123, ["First", "Second"], "embedding") == [[0.1], [0.2]]
+        await asyncio.gather(*workers)
+        module.disconnect_host.assert_not_awaited()
+
+    run_async(flow())
 
 
 def test_cancelled_model_request_cleans_up_connection(load_module, run_async):

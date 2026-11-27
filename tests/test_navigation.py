@@ -32,7 +32,7 @@ def test_new_search_discards_previous_operation_selection(load_module, run_async
     module = load_module('features/search.py')
     old = (SimpleNamespace(title='Old'), None)
     current = (SimpleNamespace(title='Current'), None)
-    user = SimpleNamespace(dialogs=[old], chosen_ids={'7'}, cur_page=5, order_by='date')
+    user = SimpleNamespace(dialogs=[old], chosen_ids={'7'}, cur_page=5, order_by='date', search_in_progress=False)
     monkeypatch.setattr(module, 'user_info', {123: user})
     module.get_allowed_dialogs.return_value = [current]
 
@@ -48,7 +48,7 @@ def test_new_search_discards_previous_operation_selection(load_module, run_async
 def test_search_pagination_preserves_selection(load_module, run_async, monkeypatch):
     module = load_module('features/search.py')
     dialogs = [(SimpleNamespace(title=f'Chat {index}'), None) for index in range(module.PAGE_SIZE + 1)]
-    user = SimpleNamespace(dialogs=dialogs, chosen_ids={'0'}, cur_page=1, order_by='date')
+    user = SimpleNamespace(dialogs=dialogs, chosen_ids={'0'}, cur_page=1, order_by='date', search_in_progress=False)
     monkeypatch.setattr(module, 'user_info', {123: user})
 
     run_async(module.search_request(user_id=123, edit=True, new_request=False))
@@ -128,3 +128,26 @@ def test_search_requires_a_selected_chat(load_module, run_async, monkeypatch):
 
     module.store_dialog.assert_not_called()
     assert 'at least one' in module.send_message.call_args.args[1]
+    module.disable_inline_keyboard.assert_not_awaited()
+
+
+def test_confirming_chats_retires_selection_before_next_prompt(load_module, run_async, monkeypatch):
+    module = load_module("features/search.py")
+    dialog = (SimpleNamespace(id=10, title="Chat"), None)
+    user = SimpleNamespace(dialogs=[dialog], chosen_ids={"0"})
+    monkeypatch.setattr(module, "user_info", {123: user})
+
+    async def retire(user_id):
+        assert user.status == UserState.WAIT_FOR_REQUEST_ANSWER
+        module.send_message.assert_not_awaited()
+
+    module.disable_inline_keyboard.side_effect = retire
+    user.history_size = 100
+    user.pending_search_query = None
+    user.search_since = None
+    user.search_until = None
+
+    run_async(module.process_search_chat(123))
+
+    module.disable_inline_keyboard.assert_awaited_once_with(123)
+    assert user.status == UserState.WAIT_FOR_SEARCH_TEXT

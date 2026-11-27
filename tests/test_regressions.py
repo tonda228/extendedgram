@@ -55,7 +55,7 @@ def test_two_factor_login_uses_the_same_initialization(load_module, run_async, m
 
 
 def test_invalid_json_uses_default_retry_limit(load_module, run_async):
-    module = load_module("llm/completions.py")
+    module = load_module("host/llm/completions.py")
     create = module.llm_client.chat.completions.create
     create.return_value = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="invalid JSON"))])
 
@@ -66,7 +66,7 @@ def test_invalid_json_uses_default_retry_limit(load_module, run_async):
 
 
 def test_single_message_bad_request_does_not_recurse(load_module, run_async):
-    module = load_module("llm/completions.py")
+    module = load_module("host/llm/completions.py")
     response = httpx.Response(400, request=httpx.Request("POST", "https://example.test"))
     error = openai.BadRequestError("Too large", response=response, body=None)
     module.llm_client.chat.completions.create.side_effect = error
@@ -131,10 +131,9 @@ def test_group_host_receives_requests_and_cleans_up_on_disconnect(load_module, r
     monkeypatch.setattr(module, "finish_requests", helpers.finish_requests)
     monkeypatch.setattr(module, "close_websocket", AsyncMock())
     module.get_app_user_groups.return_value = [SimpleNamespace(group_id=1)]
-    user = AppUser(user_id=123, status=UserState.AUTHENTICATED,
+    user = AppUser(user_id=123, status=UserState.WAIT_FOR_GROUP_CHOICE,
                    client=TelegramClient(StringSession(), 1, "test-hash"))
     monkeypatch.setattr(module, "user_info", {123: user})
-    monkeypatch.setattr(module, "uninitialized_users", {123: SimpleNamespace(in_group=True)})
     module.authenticate_host = Mock(return_value=SimpleNamespace(password_hash=hashlib.sha256(b"password").hexdigest()))
     websocket = WebSocket({"type": "websocket", "headers": [
         (b"authorization", b"Bearer token"), (b"password", b"password"),
@@ -145,6 +144,8 @@ def test_group_host_receives_requests_and_cleans_up_on_disconnect(load_module, r
 
     async def register_request(payload):
         assert module.available_hosts[123].embedding_models == ("another-embedding", "second-embedding")
+        assert user.status == UserState.WAIT_FOR_GROUP_CHOICE
+        module.menu.assert_not_awaited()
         future = asyncio.get_running_loop().create_future()
         futures.append(future)
         module.active_requests[42] = Request(user_id=456, host=module.available_hosts[123], future=future,
@@ -177,7 +178,10 @@ def test_group_host_receives_requests_and_cleans_up_on_disconnect(load_module, r
 
     run_async(module.register_new_host(websocket, 123))
 
-    module.offer_group_options.assert_awaited_once_with(123)
+    assert module.menu.await_count == 2
+    module.menu.assert_any_await(user_id=123)
+    module.menu.assert_any_await(
+        user_id=123, notice="Your host disconnected. Reconnect it to make your machine available again.")
     assert receiver.await_count == len(responses) + 1
     assert futures[0].done()
     assert futures[0].result() == ("Done" if reply_with_error == "progress" else None)

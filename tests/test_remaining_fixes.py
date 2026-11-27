@@ -140,13 +140,14 @@ def test_failed_new_embedding_is_reported(load_module, run_async):
 
 def test_download_throttles_progress_and_cleans_message(load_module, run_async, monkeypatch):
     module = load_module('database/messages.py')
-    monkeypatch.setattr(module, 'user_info', {123: SimpleNamespace(history_size=10)})
+    monkeypatch.setattr(module, 'user_info', {123: SimpleNamespace(history_size=10, process_images=False)})
     monkeypatch.setattr(module, 'monotonic', Mock(return_value=0))
-    module.get_private_messages = Mock(return_value=[])
-    module.store_message = AsyncMock(return_value=True)
+    module.get_saved_message_metadata = Mock(return_value={})
+    module.store_prepared_message = AsyncMock()
+    module.request_embeddings.side_effect = lambda user_id, texts, model: [[0.1] for text in texts]
     progress = SimpleNamespace(delete=AsyncMock())
-    module.send_message.side_effect = [SimpleNamespace(message_id=1), progress, None]
-    messages = [SimpleNamespace(id=index, date=datetime.now(timezone.utc)) for index in [3, 2, 1]]
+    module.send_message.side_effect = [progress]
+    messages = [SimpleNamespace(id=index, date=datetime.now(timezone.utc), photo=None, text=str(index)) for index in [3, 2, 1]]
 
     class FakeClient:
         async def iter_messages(self, *args, **kwargs):
@@ -157,12 +158,39 @@ def test_download_throttles_progress_and_cleans_message(load_module, run_async, 
     assert run_async(module.store_unsaved_messages(123, dialog, FakeClient(), True, 3)) is True
     module.resend_processing_status.assert_not_awaited()
     progress.delete.assert_awaited_once()
+    module.send_message.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_download_notice_is_removed_on_completion_or_failure(load_module, run_async, monkeypatch, failed):
+    module = load_module("database/messages.py")
+    monkeypatch.setattr(module, "user_info", {123: SimpleNamespace(history_size=100, process_images=False)})
+    module.get_saved_message_metadata = Mock(return_value={})
+    notice = SimpleNamespace(delete=AsyncMock())
+    module.send_message.return_value = notice
+
+    class FakeClient:
+        async def iter_messages(self, *args, **kwargs):
+            if failed:
+                raise RuntimeError("Download failed")
+            for message in []:
+                yield message
+
+    operation = module.store_unsaved_messages(123, (SimpleNamespace(entity=None), None), FakeClient())
+    if failed:
+        with pytest.raises(RuntimeError, match="Download failed"):
+            run_async(operation)
+    else:
+        assert run_async(operation)
+
+    notice.delete.assert_awaited_once()
+    module.send_message.assert_awaited_once()
 
 
 def test_summary_download_fills_gaps_below_newest_cached_message(load_module, run_async, monkeypatch):
     module = load_module('database/messages.py')
-    monkeypatch.setattr(module, 'user_info', {123: SimpleNamespace(history_size=10)})
-    module.get_private_messages = Mock(return_value=[SimpleNamespace(message_id=105)])
+    monkeypatch.setattr(module, 'user_info', {123: SimpleNamespace(history_size=10, process_images=False)})
+    module.get_saved_message_metadata = Mock(return_value={105: (None, True)})
     module.send_message.return_value = None
     module.store_message = AsyncMock(return_value=True)
     module.get_unread_count.return_value = 3
@@ -177,6 +205,35 @@ def test_summary_download_fills_gaps_below_newest_cached_message(load_module, ru
 
     assert result is True
     assert [call.args[0].id for call in module.store_message.await_args_list] == [104, 103]
+
+
+def test_search_processes_all_messages_in_range_without_delays(load_module, run_async, monkeypatch):
+    module = load_module("database/messages.py")
+    monkeypatch.setattr(module, "user_info", {123: SimpleNamespace(history_size=100, process_images=False)})
+    module.get_saved_message_metadata = Mock(return_value={40: (None, True), 39: ("Photo", False)})
+    module.store_prepared_message = AsyncMock()
+    module.request_embeddings.side_effect = lambda user_id, texts, model: [[0.1] for text in texts]
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    progress = AsyncMock()
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class FakeClient:
+        async def iter_messages(self, *args, **kwargs):
+            for message_id in range(40, 0, -1):
+                yield SimpleNamespace(id=message_id, date=since, photo=None, text=str(message_id))
+            yield SimpleNamespace(id=0, date=since - timedelta(seconds=1))
+
+    dialog = (SimpleNamespace(id=10, entity=None), None)
+    assert run_async(module.store_unsaved_messages(123, dialog, FakeClient(), True, show_download_status=False,
+                                                   since=since, progress=progress))
+    texts = [text for call in module.request_embeddings.await_args_list for text in call.args[1]]
+    assert texts == [f"Text: {message_id}\nMedia: {'Photo' if message_id == 39 else 'None'}" for message_id in range(39, 0, -1)]
+    assert module.request_embeddings.await_count == 1
+    assert [call.args[0].id for call in module.store_prepared_message.await_args_list] == list(range(38, 0, -1))
+    sleep.assert_not_awaited()
+    progress.assert_awaited_with(40)
+    module.send_message.assert_not_awaited()
 
 
 def test_new_message_keeps_manual_dialog_permission(load_module, run_async, monkeypatch):
@@ -226,7 +283,7 @@ def test_restored_user_is_prompted_for_password(load_module, run_async, monkeypa
 
 
 def test_summary_rejects_missing_message_ids(load_module, run_async):
-    module = load_module('host/summarize.py')
+    module = load_module('host/host/summarize.py')
     module.send_data.return_value = [{'topic': 'Meeting', 'summary': 'Friday'}]
 
     with pytest.raises(ValidationError):
