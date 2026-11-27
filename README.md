@@ -51,6 +51,8 @@ You can personalize the assistant through its settings:
 - **History size:** Choose how much message history is considered.
 - **Read status:** Decide whether processed messages should be marked as read automatically.
 - **Preloading:** Configure preparation of message history for later searches.
+- **Process new images:** Choose whether the bot should generate descriptions for
+  images without a saved description. Saved descriptions are reused either way.
 
 This lets you use ExtendedGram for a single busy group or across multiple conversations.
 
@@ -61,18 +63,57 @@ You don't need to understand databases, AI models, or servers to use the bot.
 1. **Open an ExtendedGram bot instance you trust.** Get the bot's Telegram link from its operator. There is no public bot link listed here yet.
 2. **Send `/start`.** Follow the instructions shown by the bot.
 3. **Connect your Telegram account.** Enter your phone number and Telegram verification code. If two-step verification is enabled, follow the additional password prompt.
-4. **If you chose to be a host** run following in your terminal **after you receive pairing code**:
+4. **If you chose to be a host**, configure `host/.env` and run the host from the repository root after you receive the pairing code:
+
+You can download only the host folder using Git sparse checkout. See the
+[host-only setup instructions](host/README.md) for downloading, configuration,
+running, and updating without checking out the bot's source code.
+
+```dotenv
+COORDINATOR_URL=https://YOUR_VPS_IP
+OPEN_AI_URL=http://127.0.0.1:1234/v1
+OPENAI_API_KEY=replace-with-your-model-server-key
+COMPLETIONS_MODEL=your-completions-model
+EMBEDDING_MODEL=your-embedding-model
+```
+
+Use the URL and model names from your model server. If that server explicitly
+allows unauthenticated requests, set `OPENAI_API_KEY=local`; the client still
+requires a nonempty value. For an authenticated endpoint, use its real API key.
+
 ```commandline
-cd telegram-bot
+python -m pip install -r host/requirements.txt
 python -m host.main
 ```
+Enter your user ID, pairing code, and bot password in the host terminal. You
+can use the bot without a connected host and request a fresh code under
+**Settings → Pair host**. Codes expire after 10 minutes. AI operations still
+need a compatible connected host.
+Press Ctrl+C in the host terminal to stop it. Pending local tasks are cancelled
+and the WebSocket is closed before exit; an already-closed connection does not
+interrupt cleanup. Terminal interruption is reported without a traceback, and
+saved pairing credentials are retained for the next launch.
 Hosts declare which embedding models they support when connecting. A shared
 host is eligible for a group only if it offers the group's exact model name.
 All models must produce 1,024-dimensional embeddings and be available on the
 host's model server. Restart both processes after updating their code.
 
-On a host, keep `EMBEDDING_MODEL` for one model, or set an ordered list in its
-`.env` for multiple models:
+Bot sessions expire after 30 minutes without button presses or messages when
+the user's own host is disconnected. Disconnecting that host starts a fresh
+30-minute period; a connected own host keeps the session open. Expiry closes
+the Telegram client and asks for the bot password, while retaining stored data.
+Background preloading does not extend the period. A foreground search or summary
+can finish before the idle period starts.
+
+The bot removes completed selection screens and replaces old menus when opening
+a new screen. Download and model progress messages are removed after completion
+or failure. Login and host-connection confirmations, search answers, and summaries
+remain in the chat. Only explicitly temporary form prompts are removed on the next
+screen. Processing errors are displayed
+with the menu buttons instead of adding a separate error and menu message.
+
+On a host, keep `EMBEDDING_MODEL` for one model, or set an ordered list in
+`host/.env` for multiple models:
 
 ```dotenv
 EMBEDDING_MODELS=model-a,model-b
@@ -82,6 +123,36 @@ When `EMBEDDING_MODELS` is set, it takes precedence over the host's
 `EMBEDDING_MODEL`. The first model is used for your own requests on your host;
 shared group requests use the model required by the group. The coordinator
 still uses its singular `EMBEDDING_MODEL` as the default for groups.
+
+The coordinator has its own dependencies in `telegram-bot/requirements.txt`.
+For separate local environments, install only the requirements file for the
+service you are running. Each service's Dockerfile uses its own directory as
+its build context. The host uses `host/auth.json` locally and
+`/app/state/auth.json` on its Docker volume.
+
+The server Compose file runs the bot, database, and Caddy on the VPS. They share
+the project's automatically created default Docker network. Configure the
+Caddyfile with the VPS's public IP before starting all three services from the
+repository root on the VPS:
+
+```bash
+sudo docker compose -f telegram-bot/compose.yaml up --build -d
+```
+
+The AI host runs on your PC and connects to the VPS over HTTPS/WSS. It needs no
+external Docker network. To run the host in Docker, use an interactive terminal
+on your PC, from the repository root:
+
+```powershell
+docker compose -f host/compose.yaml run --build --rm host
+```
+
+Use `DB_HOST=db` in `telegram-bot/.env` on the VPS. Set
+`COORDINATOR_URL=https://YOUR_VPS_IP` in `host/.env` on your PC; there is no
+implicit local-server address. Both pairing and WebSocket connections use this
+address. If the model server runs directly on your Windows PC and the host runs
+in Docker Desktop, use `OPEN_AI_URL=http://host.docker.internal:1234/v1` (with your
+model server's port) instead of `127.0.0.1` inside the host container.
 5. **Choose which chats can be processed.** Review your allowed-chat settings before using search or summaries.
 6. **Use the menu.** Choose **Summarize**, **Search**, or **Settings** depending on what you need.
 
@@ -89,8 +160,24 @@ In **Settings → Groups**, members can see a group's required embedding model.
 The group creator sets it when creating the group and can change it later.
 Type `default` to use the coordinator's `EMBEDDING_MODEL`. Existing groups also
 start with that default. Your own host takes priority; otherwise the bot picks
-an eligible shared host from your groups. Search uses a single model throughout
-the request and builds missing embeddings when needed.
+an eligible shared host from your groups. Search uses a single model and the
+configured history period for both indexing and finding matches. The bot
+collects missing embeddings for each chat into one request, stores each vector
+with its own message, and shows how many messages it has checked. There are no
+fixed message-count or character limits and no artificial delay between messages.
+If the embedding API rejects the request size, the host divides it into smaller
+parts without changing the order of the vectors. Restart both the bot and host
+after updating, because embedding requests now also accept a list of texts.
+
+After choosing search chats, enter your question. Then choose **Use history size**
+to start immediately, or **Set date interval** and enter, for example,
+`01.11.2026 - 25.11.2026`. Sending the valid interval starts the saved question
+automatically. Both dates are included, using UTC calendar days.
+The range applies to new indexing, saved search matches, and surrounding context.
+Choose **Use history size** to return to the configured number of days.
+The image-processing preference is saved per account; its additive migration
+runs automatically when the bot starts. Enabling it later processes skipped
+images when their messages are scanned again and rebuilds affected vectors.
 
 Keep the coordinator's `EMBEDDING_MODEL` set to the model that produced the
 existing database vectors. Change a group's model in Settings instead. Other
@@ -222,14 +309,26 @@ The tests cover encryption, Pydantic models, bot menus and authentication, host 
 
 ## Processing large requests
 
-The AI host processes messages in batches of up to 100 items and approximately
-24,000 JSON characters. Set `LLM_BATCH_MESSAGES` and `LLM_BATCH_CHARACTERS` in the
-host environment to adjust these limits for your model. These are character
-limits, not exact token limits; a single message can still exceed the model's
-context window.
+The AI host sends all supplied messages in one model request. If the model
+reports that its context is too small or truncates its answer, the host splits
+the input and retries the smaller parts. A single oversized message fails
+without repeatedly resending it. Fixed message-count and character limits,
+including the old `LLM_BATCH_*` settings, have been removed.
 
-The bot displays progress for completed batches, then a separate combining stage.
+The bot displays model progress and a separate combining stage when needed.
 Hosts send activity updates every 15 seconds while waiting for the model. The
 coordinator allows 120 seconds without activity and 30 minutes for a model request
 in total. A timeout does not enqueue another copy of the same request. Restart
 both the coordinator and AI host after updating their progress protocol.
+Embedding batches also have a 30-minute response timeout; other short operations
+retain a 120-second timeout. WebSocket messages have no fixed size limit, so a
+large vector response is not cut off by the coordinator's default 16 MiB cap.
+
+## Stopping the bot
+
+`docker compose -f telegram-bot/compose.yaml stop bot` sends SIGTERM to the bot.
+During graceful shutdown it notifies restored accounts and users who are signing
+up, then stops polling and closes Telegram clients. Notifications are attempted
+while the Telegram bot client is still open, for up to 20 seconds in total.
+Compose gives the bot 60 seconds to stop. A forced kill or loss of power cannot
+send a shutdown notification.
