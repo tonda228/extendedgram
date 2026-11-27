@@ -147,4 +147,5 @@ def initialize_db() -> None:
                 ON private_message USING hnsw (embedding vector_cosine_ops);
                 """)
     cur.execute((Path(__file__).parent / "migrations" / "002_group_embedding_model.sql").read_text(encoding="utf-8"))
+    cur.execute((Path(__file__).parent / "migrations" / "003_process_images.sql").read_text(encoding="utf-8"))
     connection.commit()

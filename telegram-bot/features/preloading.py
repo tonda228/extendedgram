@@ -13,7 +13,9 @@ async def wait_until_idle(user_id: int) -> None:
     try:
         await asyncio.sleep(SLEEP_TIME)
         user.preloading = asyncio.create_task(start_preloading(user_id))
-        await user.preloading
+        # reset_idle_timer cancels both tasks explicitly. Do not forward a
+        # second cancellation to an embedding request that is being drained.
+        await asyncio.shield(user.preloading)
     except asyncio.CancelledError:
         pass
 
@@ -38,5 +40,5 @@ def reset_idle_timer(user_id: int, reset: bool=True) -> None:
     if user.preloading:
         user.preloading.cancel()
         user.preloading = None
-    if reset and app_user.preloading:
+    if reset and app_user.preloading and not app_user.search_in_progress:
         user.idle_task = asyncio.create_task(wait_until_idle(user_id))

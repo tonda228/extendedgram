@@ -29,14 +29,15 @@ def delete_unused_users(commit: bool = True) -> None:
     if commit:
         connection.commit()
 
-def store_telegram_user(user_id: int, user_name: str) -> None:
+def store_telegram_user(user_id: int, user_name: str, commit: bool = True) -> None:
     cur.execute("""
     INSERT INTO telegram_user (user_id, user_name)
     VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE
         SET user_name = EXCLUDED.user_name
     """, (user_id, user_name))
 
-    connection.commit()
+    if commit:
+        connection.commit()
 
 def update_ordering(user_id: int, order_by: str) -> None:
     cur.execute("""
