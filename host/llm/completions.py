@@ -7,9 +7,9 @@ import os
 import openai
 from pydantic import TypeAdapter, ValidationError
 
-from llm import llm_client
-from utils.helpers import get_request_data
-from utils.classes import SummaryTopic
+from host.llm import llm_client
+from host.utils.helpers import get_request_data
+from host.utils.classes import SummaryTopic
 
 
 async def translate_image(image_data: str) -> str | None:

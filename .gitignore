@@ -4,5 +4,5 @@
 media/
 __pycache__/
 *.pyc
-auth.json
+**/auth.json
 .db-backups/

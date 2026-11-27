@@ -5,3 +5,5 @@ media/
 __pycache__/
 *.pyc
 auth.json
+**/auth.json
+add_admin.py

@@ -2,8 +2,8 @@ from typing import Any
 
 import json
 from pydantic import TypeAdapter
-from utils.classes import SummaryTopic
-from llm.completions import send_data, ProgressCallback
+from host.utils.classes import SummaryTopic
+from host.llm.completions import send_data, ProgressCallback
 
 
 async def process_summarize_request(data: list[dict[str, Any]], progress: ProgressCallback | None = None) -> list[dict[str, Any]]:

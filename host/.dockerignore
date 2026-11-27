@@ -1,0 +1,8 @@
+**/auth.json
+auth.json
+.git/
+*.env
+.env.*
+.venv
+__pycache__/
+**/__pycache__/

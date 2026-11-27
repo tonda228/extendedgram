@@ -1,0 +1,14 @@
+{
+    default_sni 62.83.121.11
+}
+
+https://62.83.121.11 {
+    tls {
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+            profile shortlived
+        }
+    }
+
+    reverse_proxy bot:8000
+}

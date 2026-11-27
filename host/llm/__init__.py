@@ -5,4 +5,4 @@ from openai import AsyncOpenAI
 load_dotenv()
 
 # client for OpenAI compatible endpoints
-llm_client = AsyncOpenAI(base_url=os.environ["OPEN_AI_LOCAL_URL"])
+llm_client = AsyncOpenAI(base_url=os.environ["OPEN_AI_URL"])

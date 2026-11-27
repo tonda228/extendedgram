@@ -1,6 +1,6 @@
 from typing import Any
 
-from llm.completions import send_data, ProgressCallback
+from host.llm.completions import send_data, ProgressCallback
 
 async def process_search_request(data: list[dict[str, Any]], text: str, progress: ProgressCallback | None = None) -> str | None:
     message_text = "Give short answer on the following question: " + text

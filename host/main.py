@@ -9,11 +9,11 @@ import openai
 from websockets import ConnectionClosed
 from websockets.asyncio.client import ClientConnection
 
-from host.search import process_search_request
-from host.summarize import process_summarize_request
-from llm.completions import translate_image
-from llm.embeddings import create_embedding
-from utils.embedding_models import parse_embedding_models
+from host.host.search import process_search_request
+from host.host.summarize import process_summarize_request
+from host.llm.completions import translate_image
+from host.llm.embeddings import create_embedding
+from host.utils.embedding_models import parse_embedding_models
 
 load_dotenv()
 

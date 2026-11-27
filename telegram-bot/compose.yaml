@@ -3,13 +3,16 @@ services:
     build: .
     env_file:
       - .env
+    environment:
+      COORDINATOR_BIND_HOST: 0.0.0.0
     volumes:
-      - ./telegram-bot/media:/app/media
-      - ./telegram-bot/utils/config.json:/app/config.json
+      - ./media:/app/media
+      - ./utils/config.json:/app/utils/config.json:ro
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
+    stop_grace_period: 60s
     expose:
       - "8000"
 

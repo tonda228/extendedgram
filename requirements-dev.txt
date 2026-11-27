@@ -1,2 +1,3 @@
--r requirements.txt
+-r telegram-bot/requirements.txt
+-r host/requirements.txt
 pytest>=9.1,<10
