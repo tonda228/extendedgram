@@ -1,8 +1,8 @@
 # ExtendedGram AI host
 
 This folder contains the AI host that runs on your computer. It connects to an
-existing ExtendedGram server on a VPS over HTTPS/WSS. The bot, database, and Caddy
-run on the VPS; this host needs only an OpenAI-compatible model server.
+existing ExtendedGram bot instance over HTTPS/WSS using the address supplied by
+its operator. You need a running OpenAI-compatible model server.
 
 ## Download only the host
 
