@@ -1,6 +1,7 @@
 from telegram.error import TelegramError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import hashlib
+import os
 from heapq import heappush
 
 from psycopg.rows import class_row
@@ -92,7 +93,7 @@ def group_setup_back_button() -> InlineKeyboardMarkup:
 async def create_group_request(user_id: int) -> None:
     text = "Enter your group name. This name should be unique, you will be notified otherwise."
     user_info[user_id].status = UserState.WAIT_FOR_NEW_GROUP_NAME
-    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button())
+    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button(), keep_in_history=True)
 
 async def query_new_group_password(user_id: int, group_name: str) -> None:
     if group_name.isdigit():
@@ -107,13 +108,13 @@ async def query_new_group_password(user_id: int, group_name: str) -> None:
 
     text = "Enter password for your group."
     user_info[user_id].status = UserState.WAIT_FOR_NEW_GROUP_PASSWORD
-    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button())
+    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button(), keep_in_history=True)
 
 async def query_password_confirmation(user_id: int, password: str) -> None:
     user_info[user_id].pending_group_password_hash = hash_password(password)
     text = "Confirm password."
     user_info[user_id].status = UserState.WAIT_FOR_NEW_GROUP_PASSWORD_CONFIRMATION
-    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button())
+    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button(), keep_in_history=True)
 
 async def process_password_confirmation(user_id: int, password: str) -> None:
     app_user = user_info[user_id]
@@ -123,8 +124,11 @@ async def process_password_confirmation(user_id: int, password: str) -> None:
         return
 
     app_user.status = UserState.WAIT_FOR_NEW_GROUP_EMBEDDING_MODEL
-    await send_message(user_id, "Enter the exact name of a 1,024-dimensional embedding model, or type default to use the server default.",
-                       reply_markup=group_setup_back_button())
+    default_model = os.getenv("EMBEDDING_MODEL") or "Not configured"
+    await send_message(user_id, "Enter the exact name of a 1,024-dimensional embedding model, or type default.\n"
+                       f"Server default: {default_model}\n"
+                       "A shared host must provide this exact model. Typing a name does not install it.",
+                       reply_markup=group_setup_back_button(), keep_in_history=True)
 
 
 async def save_group_embedding_model(user_id: int, text: str) -> None:
@@ -226,7 +230,7 @@ async def create_group(user_id: int, embedding_model: str | None) -> None:
 async def join_group_request(user_id: int) -> None:
     text = "Enter group name or group id."
     user_info[user_id].status = UserState.WAIT_FOR_GROUP_NAME
-    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button())
+    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button(), keep_in_history=True)
 
 async def join_group(user_id: int, group: str) -> None:
     try:
@@ -250,7 +254,7 @@ async def join_group(user_id: int, group: str) -> None:
 async def query_group_password(user_id: int) -> None:
     text = "Enter password for selected group."
     user_info[user_id].status = UserState.WAIT_FOR_GROUP_PASSWORD
-    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button())
+    await send_message(chat_id=user_id, text=text, reply_markup=group_setup_back_button(), keep_in_history=True)
 
 async def check_group_password(user_id: int, password: str) -> None:
     group = user_info[user_id].pending_group

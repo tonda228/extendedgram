@@ -51,6 +51,12 @@ names separated by commas. All advertised models must be available on your model
 server. The first is used for your own requests; group requests select the model
 required by the group.
 
+When a group creator enters `default`, the group uses the server's default
+embedding model. The bot displays its actual name in the group model prompt and
+settings. Configure that exact name on your host; `default` is not a model name
+for `.env`. Every advertised model must already be available through your model
+server. Naming a missing model does not install it, and requests for it fail.
+
 The server address is already filled in in `.env.example` and is also the default
 when `COORDINATOR_URL` is missing or empty. Configure only your model server's
 URL, key, and model names. The host pairs over HTTPS and connects to

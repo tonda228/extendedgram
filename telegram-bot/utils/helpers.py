@@ -18,7 +18,7 @@ from utils.classes import DialogDBObject, PublicMessageDBObject, PrivateMessageD
 from utils.config import config_file
 from utils.state import user_info
 
-async def send_message(chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None=None, parse_mode: str | None=None, disable_web_page_preview: bool=False, edit: bool=False, message: TelegramMessage|None=None, *, temporary: bool=False) -> TelegramMessage | None:
+async def send_message(chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None=None, parse_mode: str | None=None, disable_web_page_preview: bool=False, edit: bool=False, message: TelegramMessage|None=None, *, temporary: bool=False, keep_in_history: bool=False) -> TelegramMessage | None:
     if parse_mode is None and len(text.encode("utf-16-le")) // 2 > 4096:
         chunks = [text[index:index + 2000] for index in range(0, len(text), 2000)]
         result = None
@@ -28,12 +28,15 @@ async def send_message(chat_id: int, text: str, reply_markup: InlineKeyboardMark
                 reply_markup=reply_markup if index == len(chunks) - 1 else None,
                 disable_web_page_preview=disable_web_page_preview,
                 edit=edit and index == 0, message=message if index == 0 else None,
+                keep_in_history=keep_in_history,
             )
             if result is None:
                 return None
         return result
     app_user = user_info.get(chat_id)
     last_message = message if message is not None else (app_user.last_message if app_user else None)
+    if app_user and app_user.keep_last_message and last_message is app_user.last_message:
+        edit = False
     if edit and last_message is not None:
         sender_func = get_edit_message_text_func(last_message.message_id)
     else:
@@ -47,14 +50,22 @@ async def send_message(chat_id: int, text: str, reply_markup: InlineKeyboardMark
                 obsolete = []
                 if reply_markup is not None:
                     if app_user.last_message is not None:
-                        obsolete.append(app_user.last_message)
+                        obsolete.append((app_user.last_message, app_user.keep_last_message))
                     app_user.last_message = new_message
+                    app_user.keep_last_message = keep_in_history
                 if reply_markup is not None or temporary:
                     if app_user.temporary_message is not None:
-                        obsolete.append(app_user.temporary_message)
+                        obsolete.append((app_user.temporary_message, False))
                     app_user.temporary_message = new_message if temporary and reply_markup is None else None
-                for previous in obsolete:
+                for previous, keep in obsolete:
                     if previous.message_id == new_message.message_id:
+                        continue
+                    if keep:
+                        try:
+                            await application.bot.edit_message_reply_markup(
+                                chat_id=chat_id, message_id=previous.message_id, reply_markup=None)
+                        except telegram.error.TelegramError:
+                            pass
                         continue
                     try:
                         await application.bot.delete_message(chat_id=chat_id, message_id=previous.message_id)

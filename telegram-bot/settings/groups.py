@@ -38,7 +38,7 @@ async def show_group(user_id: int, group_id: int) -> None:
     user = user_info[user_id]
     user.pending_group = None
     user.status = UserState.WAIT_FOR_GROUP_SETTINGS
-    model = group.embedding_model or os.getenv("EMBEDDING_MODEL") or "Not configured"
+    model = group.embedding_model or f"{os.getenv('EMBEDDING_MODEL') or 'Not configured'} (server default)"
     buttons = [[InlineKeyboardButton("Back", callback_data="groups")]]
     if group.created_by == user_id:
         buttons.insert(0, [InlineKeyboardButton("Change embedding model", callback_data=f"group_model:{group_id}")])
@@ -55,8 +55,11 @@ async def request_group_model_change(user_id: int, group_id: int) -> None:
     user.pending_group = group
     user.status = UserState.WAIT_FOR_GROUP_EMBEDDING_MODEL
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"group:{group_id}")]])
-    await send_message(user_id, "Enter the exact name of a 1,024-dimensional embedding model, or type default to use the server default.",
-                       reply_markup=keyboard, edit=True)
+    default_model = os.getenv("EMBEDDING_MODEL") or "Not configured"
+    await send_message(user_id, "Enter the exact name of a 1,024-dimensional embedding model, or type default.\n"
+                       f"Server default: {default_model}\n"
+                       "A shared host must provide this exact model. Typing a name does not install it.",
+                       reply_markup=keyboard, edit=True, keep_in_history=True)
 
 
 async def request_group_delete(user_id: int, group_id: int) -> None:

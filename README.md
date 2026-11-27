@@ -83,7 +83,9 @@ The bot removes completed selection screens and replaces old menus when opening
 a new screen. Download and model progress messages are removed after completion
 or failure. Login and host-connection confirmations, search answers, and summaries
 remain in the chat. Only explicitly temporary form prompts are removed on the next
-screen. Processing errors are displayed
+screen. Group name, password, confirmation, and model prompts stay in the chat;
+their old buttons are removed when advancing or returning to settings.
+Processing errors are displayed
 with the menu buttons instead of adding a separate error and menu message.
 
 In **Settings → Groups**, members can see a group's required embedding model.
@@ -92,6 +94,12 @@ Type `default` to use the model supplied by the bot operator. Your own host
 takes priority; otherwise the bot picks
 an eligible shared host from your groups. Search uses a single model and the
 configured history period for both indexing and finding matches.
+The model prompt displays the current **Server default** name. `default` is an
+option in the bot, not a model name to put in a host's `.env`. A shared host must
+advertise the exact required name and its model server must be able to serve it.
+Entering a name does not download or install the model. If no compatible host is
+connected, search cannot run; if an advertised model is unavailable, its request
+fails instead of silently switching to another model.
 
 After choosing search chats, enter your question. Then choose **Use history size**
 to start immediately, or **Set date interval** and enter, for example,
@@ -154,6 +162,8 @@ This overrides `EMBEDDING_MODEL`. The first model is used for your own requests;
 shared group requests use the group's required model. Every advertised model
 must be available and produce 1,024-dimensional embeddings. A shared host is
 eligible only when it offers the group's exact model name.
+For a group using `default`, use the actual model name shown as **Server default**
+in the bot's group settings. Do not set `EMBEDDING_MODEL=default`.
 
 ### Run with Python
 

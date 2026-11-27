@@ -268,6 +268,41 @@ def test_deleted_menu_is_replaced_when_back_tries_to_edit_it(load_module, run_as
     assert user.last_message is replacement
 
 
+def test_back_keeps_answered_group_prompt_instead_of_editing_it(load_module, run_async, monkeypatch):
+    module = load_module("utils/helpers.py")
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Back to groups", callback_data="groups")]])
+    prompt = Message(message_id=10, chat=Chat(123, "private"), date=datetime.now(timezone.utc),
+                     text="Enter your group name.", reply_markup=markup)
+    user = AppUser(user_id=123, status=UserState.WAIT_FOR_NEW_GROUP_NAME,
+                   last_message=prompt, keep_last_message=True)
+    monkeypatch.setattr(module, "user_info", {123: user})
+    replacement = telegram_message(11)
+    module.application.bot.send_message.return_value = replacement
+    edit = AsyncMock()
+    monkeypatch.setattr(module.application.bot, "edit_message_text", edit, raising=False)
+
+    run_async(module.send_message(123, "Groups", reply_markup=markup, edit=True))
+
+    edit.assert_not_awaited()
+    module.application.bot.delete_message.assert_not_awaited()
+    module.application.bot.edit_message_reply_markup.assert_awaited_once_with(chat_id=123, message_id=10, reply_markup=None)
+    assert prompt.text == "Enter your group name."
+    assert user.last_message is replacement and not user.keep_last_message
+
+
+def test_failed_button_cleanup_keeps_group_prompt_and_invalidates_it(load_module, run_async, monkeypatch):
+    module = load_module("utils/keyboard.py")
+    user = AppUser(user_id=123, status=UserState.WAIT_FOR_NEW_GROUP_NAME,
+                   last_message=telegram_message(10), keep_last_message=True)
+    monkeypatch.setattr(module, "user_info", {123: user})
+    module.application.bot.edit_message_reply_markup.side_effect = BadRequest("Message can't be edited")
+
+    run_async(module.disable_inline_keyboard(123))
+
+    module.application.bot.delete_message.assert_not_awaited()
+    assert user.last_message is None and not user.keep_last_message
+
+
 @pytest.mark.parametrize("action", ["next", "0", "confirm", "settings", "search", "summarize"])
 def test_stale_message_buttons_cannot_change_current_screen(load_module, run_async, monkeypatch, action):
     module = load_handlers(load_module, monkeypatch)

@@ -137,6 +137,7 @@ class AppUser(BaseModel):
     category_dialogs_count: int = 0
     allowed_dialogs_set: set[tuple[int, int]]|None = None
     last_message: TelegramMessage | None = None  # Latest message with an inline keyboard.
+    keep_last_message: bool = False  # Preserve input prompts after their buttons are retired.
     temporary_message: TelegramMessage | None = None  # Short notice removed on the next screen.
     pairing_code_hash: str|None = None
     pairing_code_expires_at: float = 0.0
